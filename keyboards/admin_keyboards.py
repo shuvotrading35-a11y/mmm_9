@@ -1,43 +1,145 @@
 """
-Admin Keyboards — inline keyboards for admin panel.
+Admin Keyboards — ReplyKeyboard (styled) for main menu,
+InlineKeyboard for per-item actions.
+Requires python-telegram-bot>=22.7.
 """
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import (
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 
 
-def admin_main_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("👥 Users", callback_data="admin:users"),
-            InlineKeyboardButton("📋 Campaigns", callback_data="admin:campaigns"),
-        ],
-        [
-            InlineKeyboardButton("💼 Sponsors", callback_data="admin:sponsors"),
-            InlineKeyboardButton("💰 Deposits", callback_data="admin:deposits"),
-        ],
-        [
-            InlineKeyboardButton("💳 Withdrawals", callback_data="admin:withdrawals"),
-            InlineKeyboardButton("🎁 Referrals", callback_data="admin:referrals"),
-        ],
-        [
-            InlineKeyboardButton("📊 Statistics", callback_data="admin:stats"),
-            InlineKeyboardButton("📢 Broadcast", callback_data="admin:broadcast"),
-        ],
-        [
-            InlineKeyboardButton("🚫 Banned Users", callback_data="admin:banned"),
-            InlineKeyboardButton("⚙️ Settings", callback_data="admin:settings"),
-        ],
-        [
-            InlineKeyboardButton("🛡 Fraud Monitor", callback_data="admin:fraud"),
-            InlineKeyboardButton("📜 Audit Logs", callback_data="admin:audit"),
-        ],
-    ])
+# ══════════════════════════════════════════════════════════════════
+# Reply keyboards — main navigation
+# ══════════════════════════════════════════════════════════════════
 
+def admin_main_reply_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton("👥 Users", style="primary"),
+                KeyboardButton("📋 Campaigns", style="primary"),
+            ],
+            [
+                KeyboardButton("💼 Sponsors", style="primary"),
+                KeyboardButton("💰 Deposits", style="success"),
+            ],
+            [
+                KeyboardButton("💳 Withdrawals", style="success"),
+                KeyboardButton("🎁 Referrals", style="primary"),
+            ],
+            [
+                KeyboardButton("📊 Statistics", style="primary"),
+                KeyboardButton("📢 Broadcast", style="primary"),
+            ],
+            [
+                KeyboardButton("🚫 Banned Users", style="danger"),
+                KeyboardButton("⚙️ Settings", style="primary"),
+            ],
+            [
+                KeyboardButton("🛡 Fraud Monitor", style="danger"),
+                KeyboardButton("📜 Audit Logs"),
+            ],
+            [
+                KeyboardButton("🔙 Close Admin Panel", style="danger"),
+            ],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Admin Panel — choose an option...",
+    )
+
+
+def admin_back_reply_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton("🔙 Back to Admin Panel", style="primary"),
+                KeyboardButton("🏠 Main Menu"),
+            ],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+def admin_cancel_reply_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton("❌ Cancel Admin", style="danger"),
+                KeyboardButton("🔙 Back to Admin Panel", style="primary"),
+            ],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def admin_users_filter_reply_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton("🔍 Search User", style="primary"),
+                KeyboardButton("📋 Recent Users", style="primary"),
+            ],
+            [
+                KeyboardButton("🚫 Banned", style="danger"),
+                KeyboardButton("⚠️ Restricted", style="danger"),
+            ],
+            [KeyboardButton("🔙 Back to Admin Panel")],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+def admin_campaigns_filter_reply_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton("⏳ Pending", style="primary"),
+                KeyboardButton("✅ Active", style="success"),
+            ],
+            [
+                KeyboardButton("⏸ Paused", style="primary"),
+                KeyboardButton("❌ Rejected", style="danger"),
+            ],
+            [KeyboardButton("🔙 Back to Admin Panel")],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+def admin_withdrawals_filter_reply_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton("⏳ Pending Withdrawals", style="primary"),
+                KeyboardButton("✅ Approved", style="success"),
+            ],
+            [
+                KeyboardButton("❌ Rejected", style="danger"),
+                KeyboardButton("📋 All Withdrawals"),
+            ],
+            [KeyboardButton("🔙 Back to Admin Panel")],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════
+# Inline keyboards — per-item actions (need an ID)
+# ══════════════════════════════════════════════════════════════════
 
 def user_action_keyboard(user_id: int, status: str) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton("💰 Adjust Balance", callback_data=f"admin:user_balance:{user_id}")],
     ]
-    if status not in ("BANNED",):
+    if status != "BANNED":
         buttons.append([InlineKeyboardButton("🚫 Ban User", callback_data=f"admin:ban:{user_id}")])
     else:
         buttons.append([InlineKeyboardButton("✅ Unban User", callback_data=f"admin:unban:{user_id}")])
