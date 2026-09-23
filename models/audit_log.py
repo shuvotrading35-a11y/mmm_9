@@ -1,8 +1,8 @@
 from typing import Optional, Any, Dict
 from sqlalchemy import (
-    BigInteger, String, DateTime, func, Index, INET
+    BigInteger, String, DateTime, func, Index
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, INET
 from sqlalchemy.orm import Mapped, mapped_column
 from database import Base
 
