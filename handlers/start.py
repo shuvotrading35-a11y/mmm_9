@@ -90,3 +90,35 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Use 🆘 Support in the menu to create a ticket."
     )
     await update.message.reply_text(text, parse_mode="HTML")
+
+
+async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """🏠 Main Menu button — re-show the main menu."""
+    user = update.effective_user
+
+    is_sponsor = False
+    try:
+        async with get_session() as session:
+            from services.sponsor_service import SponsorService
+            sponsor = await SponsorService.get_sponsor_by_user(session, user.id)
+            if sponsor is not None:
+                status_str = (
+                    sponsor.status.value if hasattr(sponsor.status, "value")
+                    else str(sponsor.status)
+                )
+                is_sponsor = (status_str == "APPROVED")
+    except Exception:
+        log.exception("Failed to check sponsor status")
+        # fall back to user flag
+        try:
+            async with get_session() as session:
+                db_user = await UserService.get_user(session, user.id)
+                is_sponsor = bool(db_user and db_user.is_sponsor)
+        except Exception:
+            pass
+
+    await update.message.reply_text(
+        "🏠 <b>Main Menu</b>",
+        parse_mode="HTML",
+        reply_markup=main_menu_keyboard(is_sponsor=is_sponsor),
+    )
