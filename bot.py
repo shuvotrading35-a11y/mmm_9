@@ -1,38 +1,22 @@
 """
 GLOBAL TASK EARN — Main Bot Entry Point
-Supports both webhook and polling mode via environment config.
 """
 import asyncio
-import logging
 import signal
 import structlog
 from telegram import Update
 from telegram.ext import (
     Application, ApplicationBuilder, CommandHandler,
     MessageHandler, CallbackQueryHandler, filters,
-    ConversationHandler
 )
 
 from config import settings
 from database import init_db, close_db
-from middlewares.auth_middleware import AuthMiddleware
-from middlewares.ban_middleware import BanMiddleware
-from middlewares.force_join_middleware import ForceJoinMiddleware
-from middlewares.rate_limit_middleware import RateLimitMiddleware
-from middlewares.maintenance_middleware import MaintenanceMiddleware
-from middlewares.logging_middleware import LoggingMiddleware
 
-from handlers.start import (
-    cmd_start, cmd_help,
-    STATES as START_STATES
-)
-from handlers.profile import (
-    handle_profile, handle_set_wallet,
-    WALLET_INPUT, profile_conv_handler
-)
+from handlers.start import cmd_start, cmd_help
+from handlers.profile import handle_profile, profile_conv_handler
 from handlers.tasks import (
-    handle_tasks, handle_task_done, handle_task_skip,
-    handle_task_next
+    handle_tasks, handle_task_done, handle_task_skip, handle_task_next
 )
 from handlers.withdraw import withdraw_conv_handler
 from handlers.referral import handle_referral
@@ -43,17 +27,28 @@ from handlers.support import support_conv_handler
 from handlers.force_join import handle_force_join_check
 
 from admin.panel import (
-    admin_panel_handler, admin_callback_handler
+    admin_panel_handler, admin_callback_handler,
+    admin_panel_reply_handler,
+    admin_users_reply, admin_campaigns_reply, admin_sponsors_reply,
+    admin_deposits_reply, admin_withdrawals_reply, admin_referrals_reply,
+    admin_stats_reply, admin_broadcast_reply, admin_banned_reply,
+    admin_settings_reply, admin_fraud_reply, admin_audit_reply,
+    admin_back_reply, admin_close_reply, admin_cancel_reply,
 )
 from sponsor.panel import (
-    sponsor_panel_handler, sponsor_callback_handler
+    sponsor_panel_handler, sponsor_callback_handler,
+    sponsor_panel_reply_handler, sponsor_create_campaign_reply,
+    sponsor_my_campaigns_reply, sponsor_deposit_reply,
+    sponsor_analytics_reply, sponsor_wallet_reply,
+    sponsor_support_reply, sponsor_back_reply,
+    sponsor_task_type_reply, sponsor_duration_reply,
+    sponsor_cancel_reply,
 )
 
 log = structlog.get_logger(__name__)
 
 
 async def post_init(application: Application) -> None:
-    """Set bot commands after bot starts. DB is already initialized in run_*()."""
     from telegram import BotCommand
     commands = [
         BotCommand("start", "Start the bot"),
@@ -67,35 +62,27 @@ async def post_init(application: Application) -> None:
     await application.bot.set_my_commands(commands)
     log.info("Bot commands set")
 
-    # ── NotificationService-এ bot সেট করা (init হওয়ার পর) ──
     try:
         from services.notification_service import NotificationService
-        # সম্ভাব্য সব মেথড নাম চেক করা
-        for method_name in ("set_bot", "set_application", "configure", "init"):
-            method = getattr(NotificationService, method_name, None)
-            if callable(method):
+        for name in ("set_bot", "set_application", "configure", "init"):
+            m = getattr(NotificationService, name, None)
+            if callable(m):
                 try:
-                    method(application.bot)
+                    m(application.bot)
                 except TypeError:
-                    method(bot=application.bot)
-                log.info("NotificationService initialized", method=method_name)
+                    m(bot=application.bot)
+                log.info("NotificationService initialized", method=name)
                 break
-        else:
-            log.warning("NotificationService has no known setter method")
-    except ImportError:
-        log.warning("NotificationService module not found — skipping")
     except Exception:
-        log.exception("NotificationService setup failed")
+        log.exception("NotificationService setup skipped")
 
 
 async def post_shutdown(application: Application) -> None:
-    """Cleanup on shutdown."""
     await close_db()
     log.info("Database connections closed")
 
 
 def build_application() -> Application:
-    """Build and configure the Telegram application."""
     builder = ApplicationBuilder()
     builder.token(settings.BOT_TOKEN)
     builder.post_init(post_init)
@@ -103,21 +90,11 @@ def build_application() -> Application:
     builder.concurrent_updates(True)
 
     if settings.WEBHOOK_URL:
-        builder.updater(None)  # Disable updater for webhook mode
+        builder.updater(None)
 
     app = builder.build()
 
-    # Register middleware (PTB uses custom update processors)
-    # Order matters: maintenance → ban → force_join → rate_limit → auth → logging
-    app.add_handler(MessageHandler(
-        filters.ALL,
-        MaintenanceMiddleware.process,
-    ), group=-10)
-    app.add_handler(CallbackQueryHandler(
-        MaintenanceMiddleware.process_callback
-    ), group=-10)
-
-    # Conversation handlers (must be registered before generic handlers)
+    # Conversation handlers
     app.add_handler(profile_conv_handler())
     app.add_handler(withdraw_conv_handler())
     app.add_handler(support_conv_handler())
@@ -131,151 +108,94 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("referral", handle_referral))
     app.add_handler(CommandHandler("stats", handle_statistics))
     app.add_handler(CommandHandler("admin", admin_panel_handler))
+    app.add_handler(CommandHandler("sponsor", sponsor_panel_handler))
 
-    # Message handlers (ReplyKeyboard button text)
+    # ── SPONSOR Reply Keyboard handlers ──
+    app.add_handler(MessageHandler(filters.Regex(r"^💼 Sponsor Panel$"), sponsor_panel_reply_handler))
+    app.add_handler(MessageHandler(filters.Regex(r"^➕ Create Campaign$"), sponsor_create_campaign_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^📋 My Campaigns$"), sponsor_my_campaigns_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^💰 Deposit USDT$"), sponsor_deposit_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^📊 Analytics$"), sponsor_analytics_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^💼 Wallet Info$"), sponsor_wallet_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^🆘 Support$"), sponsor_support_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^🔙 Back to Sponsor Panel$"), sponsor_back_reply))
     app.add_handler(MessageHandler(
-        filters.Regex(r"^👤 Profile$"), handle_profile
+        filters.Regex(r"^📢 Channel Join$|^👥 Group Join$|^🤖 Bot Start$|^📢👥 Channel \+ Group$"),
+        sponsor_task_type_reply
     ))
-    app.add_handler(MessageHandler(
-        filters.Regex(r"^💰 Live Payments$"), handle_live_payments
-    ))
-    app.add_handler(MessageHandler(
-        filters.Regex(r"^📋 View Tasks$"), handle_tasks
-    ))
-    app.add_handler(MessageHandler(
-        filters.Regex(r"^🎁 Referral$"), handle_referral
-    ))
-    app.add_handler(MessageHandler(
-        filters.Regex(r"^💳 Withdraw$"), handle_withdraw_menu
-    ))
-    app.add_handler(MessageHandler(
-        filters.Regex(r"^📊 Statistics$"), handle_statistics
-    ))
-    app.add_handler(MessageHandler(
-        filters.Regex(r"^📣 Promotion$"), handle_promotion
-    ))
-    app.add_handler(MessageHandler(
-        filters.Regex(r"^🆘 Support$"), handle_support_menu
-    ))
-    app.add_handler(MessageHandler(
-        filters.Regex(r"^💼 Sponsor Panel$"), sponsor_panel_handler
-    ))
+    app.add_handler(MessageHandler(filters.Regex(r"^1 Day$|^3 Days$|^7 Days$|^30 Days$"), sponsor_duration_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^❌ Cancel Sponsor$"), sponsor_cancel_reply))
 
-    # Callback query handlers
-    app.add_handler(CallbackQueryHandler(
-        handle_task_done, pattern=r"^task_done:\d+$"
-    ))
-    app.add_handler(CallbackQueryHandler(
-        handle_task_skip, pattern=r"^task_skip:\d+$"
-    ))
-    app.add_handler(CallbackQueryHandler(
-        handle_task_next, pattern=r"^task_next$"
-    ))
-    app.add_handler(CallbackQueryHandler(
-        handle_live_payments, pattern=r"^live_refresh$"
-    ))
-    app.add_handler(CallbackQueryHandler(
-        admin_callback_handler, pattern=r"^admin:"
-    ))
-    app.add_handler(CallbackQueryHandler(
-        sponsor_callback_handler, pattern=r"^sponsor:"
-    ))
+    # ── ADMIN Reply Keyboard handlers ──
+    app.add_handler(MessageHandler(filters.Regex(r"^👥 Users$"), admin_users_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^📋 Campaigns$"), admin_campaigns_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^💼 Sponsors$"), admin_sponsors_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^💰 Deposits$"), admin_deposits_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^💳 Withdrawals$"), admin_withdrawals_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^🎁 Referrals$"), admin_referrals_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^📊 Statistics$"), admin_stats_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^📢 Broadcast$"), admin_broadcast_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^🚫 Banned Users$"), admin_banned_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^⚙️ Settings$"), admin_settings_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^🛡 Fraud Monitor$"), admin_fraud_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^📜 Audit Logs$"), admin_audit_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^🔙 Back to Admin Panel$"), admin_back_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^🔙 Close Admin Panel$"), admin_close_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^❌ Cancel Admin$"), admin_cancel_reply))
 
-    # Error handler
+    # ── Main menu reply buttons ──
+    app.add_handler(MessageHandler(filters.Regex(r"^👤 Profile$"), handle_profile))
+    app.add_handler(MessageHandler(filters.Regex(r"^💰 Live Payments$"), handle_live_payments))
+    app.add_handler(MessageHandler(filters.Regex(r"^📋 View Tasks$"), handle_tasks))
+    app.add_handler(MessageHandler(filters.Regex(r"^🎁 Referral$"), handle_referral))
+    app.add_handler(MessageHandler(filters.Regex(r"^💳 Withdraw$"), handle_withdraw_menu))
+    app.add_handler(MessageHandler(filters.Regex(r"^📊 Statistics$"), handle_statistics))
+    app.add_handler(MessageHandler(filters.Regex(r"^📣 Promotion$"), handle_promotion))
+    app.add_handler(MessageHandler(filters.Regex(r"^🆘 Support$"), handle_support_menu))
+    app.add_handler(MessageHandler(filters.Regex(r"^💼 Sponsor Panel$"), sponsor_panel_handler))
+
+    # ── Callback handlers (Inline) ──
+    app.add_handler(CallbackQueryHandler(handle_task_done, pattern=r"^task_done:\d+$"))
+    app.add_handler(CallbackQueryHandler(handle_task_skip, pattern=r"^task_skip:\d+$"))
+    app.add_handler(CallbackQueryHandler(handle_task_next, pattern=r"^task_next$"))
+    app.add_handler(CallbackQueryHandler(handle_live_payments, pattern=r"^live_refresh$"))
+    app.add_handler(CallbackQueryHandler(admin_callback_handler, pattern=r"^admin:"))
+    app.add_handler(CallbackQueryHandler(sponsor_callback_handler, pattern=r"^sponsor:"))
+
     app.add_error_handler(error_handler)
-
     return app
 
 
-async def handle_withdraw_cmd(update: Update, context) -> None:
-    """Redirect to withdraw conversation."""
+async def handle_withdraw_cmd(update, context):
     from handlers.withdraw import withdraw_start
     await withdraw_start(update, context)
 
 
-async def handle_withdraw_menu(update: Update, context) -> None:
-    """Handle withdraw from menu button."""
+async def handle_withdraw_menu(update, context):
     from handlers.withdraw import withdraw_start
     await withdraw_start(update, context)
 
 
-async def handle_support_menu(update: Update, context) -> None:
-    """Handle support from menu button."""
+async def handle_support_menu(update, context):
     from handlers.support import support_start
     await support_start(update, context)
 
 
-async def error_handler(update: object, context) -> None:
-    """Global error handler — logs error, notifies admin."""
-    log.error(
-        "Unhandled exception",
-        error=str(context.error),
-        update=str(update)[:200] if update else None,
-        exc_info=context.error
-    )
-    # Notify admin of critical errors
+async def error_handler(update, context):
+    log.error("Unhandled exception", error=str(context.error), exc_info=context.error)
     if settings.ADMIN_IDS:
         try:
-            error_msg = (
-                f"⚠️ Bot Error\n"
-                f"<code>{str(context.error)[:500]}</code>"
-            )
             await context.bot.send_message(
                 chat_id=settings.ADMIN_IDS[0],
-                text=error_msg,
-                parse_mode="HTML"
+                text=f"⚠️ <code>{str(context.error)[:500]}</code>",
+                parse_mode="HTML",
             )
         except Exception:
-            pass  # Don't let notification failure cascade
-
-
-async def run_webhook(app: Application) -> None:
-    """Run bot in webhook mode."""
-    log.info("Starting in webhook mode", url=settings.WEBHOOK_URL)
-
-    # ── Database / Redis প্রস্তুত ──
-    try:
-        log.info("Connecting to database and Redis...")
-        await init_db()
-        log.info("Database initialized")
-    except Exception:
-        log.exception("init_db failed")
-        raise
-
-    await app.initialize()
-    await app.start()
-    await app.updater.start_webhook(
-        listen="0.0.0.0",
-        port=settings.WEBHOOK_PORT,
-        url_path=settings.BOT_TOKEN,
-        webhook_url=f"{settings.WEBHOOK_URL}/{settings.BOT_TOKEN}",
-        secret_token=settings.WEBHOOK_SECRET or None,
-        allowed_updates=Update.ALL_TYPES,
-    )
-    log.info("Webhook started")
-
-    # Keep alive
-    stop_event = asyncio.Event()
-
-    def _signal_handler():
-        stop_event.set()
-
-    loop = asyncio.get_event_loop()
-    loop.add_signal_handler(signal.SIGINT, _signal_handler)
-    loop.add_signal_handler(signal.SIGTERM, _signal_handler)
-
-    await stop_event.wait()
-
-    await app.updater.stop()
-    await app.stop()
-    await app.shutdown()
+            pass
 
 
 async def run_polling(app: Application) -> None:
-    """Run bot in polling mode."""
     log.info("Starting in polling mode")
-
-    # ── Database / Redis প্রস্তুত ──
     try:
         log.info("Connecting to database and Redis...")
         await init_db()
@@ -292,25 +212,46 @@ async def run_polling(app: Application) -> None:
         )
         log.info("Bot polling started")
 
-        stop_event = asyncio.Event()
-
-        def _signal_handler():
-            stop_event.set()
-
+        stop = asyncio.Event()
         loop = asyncio.get_event_loop()
-        loop.add_signal_handler(signal.SIGINT, _signal_handler)
-        loop.add_signal_handler(signal.SIGTERM, _signal_handler)
-
-        await stop_event.wait()
+        for s in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(s, stop.set)
+        await stop.wait()
 
         await app.updater.stop()
         await app.stop()
 
 
+async def run_webhook(app: Application) -> None:
+    log.info("Starting in webhook mode", url=settings.WEBHOOK_URL)
+    await init_db()
+    log.info("Database initialized")
+
+    await app.initialize()
+    await app.start()
+    await app.updater.start_webhook(
+        listen="0.0.0.0",
+        port=settings.WEBHOOK_PORT,
+        url_path=settings.BOT_TOKEN,
+        webhook_url=f"{settings.WEBHOOK_URL}/{settings.BOT_TOKEN}",
+        secret_token=settings.WEBHOOK_SECRET or None,
+        allowed_updates=Update.ALL_TYPES,
+    )
+    log.info("Webhook started")
+
+    stop = asyncio.Event()
+    loop = asyncio.get_event_loop()
+    for s in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(s, stop.set)
+    await stop.wait()
+
+    await app.updater.stop()
+    await app.stop()
+    await app.shutdown()
+
+
 def main() -> None:
-    """Main entry point."""
     import logging as stdlib_logging
-    import structlog
 
     structlog.configure(
         processors=[
@@ -331,13 +272,11 @@ def main() -> None:
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
-
     stdlib_logging.basicConfig(
         level=getattr(stdlib_logging, settings.LOG_LEVEL.upper(), stdlib_logging.INFO)
     )
 
     app = build_application()
-
     if settings.WEBHOOK_URL:
         asyncio.run(run_webhook(app))
     else:
