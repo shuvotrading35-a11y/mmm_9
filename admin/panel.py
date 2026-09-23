@@ -1,0 +1,522 @@
+"""
+Admin Panel — main entry point and callback router.
+All handlers verify admin authorization on every call.
+"""
+import structlog
+from decimal import Decimal
+from telegram import Update
+from telegram.ext import ContextTypes
+
+from config import settings
+from database import get_session
+from keyboards.admin_keyboards import (
+    admin_main_keyboard, user_action_keyboard,
+    campaign_action_keyboard, withdrawal_action_keyboard,
+    sponsor_action_keyboard,
+)
+from utils.decimal_utils import fmt_usdt
+from utils.time_utils import fmt_datetime
+
+log = structlog.get_logger(__name__)
+
+
+def _require_admin(user_id: int) -> bool:
+    return settings.is_admin(user_id)
+
+
+async def admin_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Entry point — /admin command."""
+    user = update.effective_user
+    if not _require_admin(user.id):
+        return
+
+    await update.message.reply_text(
+        "🛡 <b>ADMIN PANEL</b>\n\nSelect an option:",
+        parse_mode="HTML",
+        reply_markup=admin_main_keyboard(),
+    )
+
+
+async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Route all admin: callbacks."""
+    query = update.callback_query
+    user = update.effective_user
+
+    if not _require_admin(user.id):
+        await query.answer("❌ Not authorized.", show_alert=True)
+        return
+
+    await query.answer()
+    data = query.data  # admin:action[:param]
+    parts = data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+
+    if action == "users":
+        await _admin_users(query)
+    elif action == "campaigns":
+        await _admin_campaigns(query)
+    elif action == "withdrawals":
+        await _admin_withdrawals(query)
+    elif action == "sponsors":
+        await _admin_sponsors(query)
+    elif action == "deposits":
+        await _admin_deposits(query)
+    elif action == "stats":
+        await _admin_stats(query)
+    elif action == "fraud":
+        await _admin_fraud(query)
+    elif action == "settings":
+        await _admin_settings(query)
+    elif action == "broadcast":
+        await _admin_broadcast_prompt(query, context)
+    elif action == "audit":
+        await _admin_audit(query)
+    elif action.startswith("ban") and len(parts) > 2:
+        await _admin_ban_user(query, int(parts[2]), user.id)
+    elif action.startswith("unban") and len(parts) > 2:
+        await _admin_unban_user(query, int(parts[2]), user.id)
+    elif action.startswith("campaign_approve") and len(parts) > 2:
+        await _admin_approve_campaign(query, int(parts[2]), user.id)
+    elif action.startswith("campaign_reject") and len(parts) > 2:
+        await _admin_reject_campaign(query, int(parts[2]), user.id)
+    elif action.startswith("campaign_pause") and len(parts) > 2:
+        await _admin_pause_campaign(query, int(parts[2]), user.id)
+    elif action.startswith("sponsor_approve") and len(parts) > 2:
+        await _admin_approve_sponsor(query, int(parts[2]), user.id)
+    elif action.startswith("wd_approve") and len(parts) > 2:
+        await _admin_approve_withdrawal(query, int(parts[2]), user.id)
+    elif action.startswith("wd_reject") and len(parts) > 2:
+        await _admin_reject_withdrawal(query, int(parts[2]), user.id)
+    else:
+        await query.edit_message_text("🛡 <b>ADMIN PANEL</b>", parse_mode="HTML",
+                                      reply_markup=admin_main_keyboard())
+
+
+async def _admin_users(query) -> None:
+    async with get_session() as session:
+        from sqlalchemy import select, func as sa_func
+        from models.user import User, UserStatus
+
+        total = (await session.execute(select(sa_func.count(User.id)))).scalar()
+        active = (await session.execute(
+            select(sa_func.count(User.id)).where(User.status == UserStatus.ACTIVE)
+        )).scalar()
+        banned = (await session.execute(
+            select(sa_func.count(User.id)).where(User.status == UserStatus.BANNED)
+        )).scalar()
+        flagged = (await session.execute(
+            select(sa_func.count(User.id)).where(User.status == UserStatus.FLAGGED)
+        )).scalar()
+
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔍 Search User", callback_data="admin:user_search")],
+        [InlineKeyboardButton("🚫 View Banned", callback_data="admin:banned")],
+        [InlineKeyboardButton("⚠️ View Flagged", callback_data="admin:flagged")],
+        [InlineKeyboardButton("🔙 Back", callback_data="admin:back")],
+    ])
+
+    await query.edit_message_text(
+        f"👥 <b>USERS</b>\n\n"
+        f"Total: <b>{total:,}</b>\n"
+        f"Active: <b>{active:,}</b>\n"
+        f"Flagged: <b>{flagged:,}</b>\n"
+        f"Banned: <b>{banned:,}</b>",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+
+
+async def _admin_campaigns(query) -> None:
+    async with get_session() as session:
+        from sqlalchemy import select, func as sa_func
+        from models.campaign import Campaign, CampaignStatus
+
+        counts = {}
+        for status in CampaignStatus:
+            count = (await session.execute(
+                select(sa_func.count(Campaign.id)).where(Campaign.status == status)
+            )).scalar()
+            counts[status] = count
+
+        # Get pending campaigns
+        pending = await session.execute(
+            select(Campaign).where(Campaign.status == CampaignStatus.PENDING).limit(5)
+        )
+        pending_list = pending.scalars().all()
+
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    buttons = []
+    if pending_list:
+        for c in pending_list:
+            buttons.append([InlineKeyboardButton(
+                f"⏳ #{c.id}: {c.title[:30]}",
+                callback_data=f"admin:campaign_view:{c.id}"
+            )])
+
+    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin:back")])
+
+    status_lines = "\n".join(
+        f"{s.value}: <b>{counts[s]:,}</b>" for s in CampaignStatus
+    )
+
+    await query.edit_message_text(
+        f"📋 <b>CAMPAIGNS</b>\n\n{status_lines}\n\n"
+        + ("⏳ <b>Pending Approval:</b>" if pending_list else "✅ No pending campaigns"),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def _admin_withdrawals(query) -> None:
+    async with get_session() as session:
+        from sqlalchemy import select
+        from models.withdrawal import Withdrawal, WithdrawalStatus
+
+        pending = await session.execute(
+            select(Withdrawal)
+            .where(Withdrawal.status == WithdrawalStatus.PENDING)
+            .order_by(Withdrawal.created_at.asc())
+            .limit(10)
+        )
+        pending_list = pending.scalars().all()
+
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    buttons = []
+    for wd in pending_list:
+        buttons.append([InlineKeyboardButton(
+            f"💵 #{wd.id} — {fmt_usdt(wd.amount)} USDT",
+            callback_data=f"admin:wd_view:{wd.id}"
+        )])
+    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin:back")])
+
+    await query.edit_message_text(
+        f"💳 <b>WITHDRAWALS</b>\n\n"
+        f"Pending: <b>{len(pending_list)}</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def _admin_sponsors(query) -> None:
+    async with get_session() as session:
+        from sqlalchemy import select
+        from models.sponsor import Sponsor, SponsorStatus
+
+        pending = await session.execute(
+            select(Sponsor).where(Sponsor.status == SponsorStatus.PENDING).limit(5)
+        )
+        pending_list = pending.scalars().all()
+
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    buttons = []
+    for s in pending_list:
+        buttons.append([InlineKeyboardButton(
+            f"⏳ Sponsor #{s.id} (user {s.user_id})",
+            callback_data=f"admin:sponsor_view:{s.id}"
+        )])
+    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin:back")])
+
+    await query.edit_message_text(
+        f"💼 <b>SPONSORS</b>\n\nPending approval: <b>{len(pending_list)}</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def _admin_deposits(query) -> None:
+    async with get_session() as session:
+        from sqlalchemy import select, func as sa_func
+        from models.deposit import Deposit, DepositStatus
+
+        total_confirmed = (await session.execute(
+            select(sa_func.coalesce(sa_func.sum(Deposit.amount), 0))
+            .where(Deposit.status == DepositStatus.CONFIRMED)
+        )).scalar()
+        pending_count = (await session.execute(
+            select(sa_func.count(Deposit.id))
+            .where(Deposit.status == DepositStatus.PENDING)
+        )).scalar()
+
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    await query.edit_message_text(
+        f"💰 <b>DEPOSITS</b>\n\n"
+        f"Total confirmed: <b>{fmt_usdt(total_confirmed)} USDT</b>\n"
+        f"Pending verification: <b>{pending_count}</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back", callback_data="admin:back")]
+        ]),
+    )
+
+
+async def _admin_stats(query) -> None:
+    from handlers.statistics import handle_statistics
+    # Reuse the statistics handler
+    async with get_session() as session:
+        from sqlalchemy import select, func as sa_func
+        from models.user import User, UserStatus
+        from models.campaign import Campaign, CampaignStatus
+        from models.transaction import Transaction, TransactionType
+        from models.withdrawal import Withdrawal, WithdrawalStatus
+        from models.deposit import Deposit, DepositStatus
+
+        total_users = (await session.execute(select(sa_func.count(User.id)))).scalar()
+        active_campaigns = (await session.execute(
+            select(sa_func.count(Campaign.id)).where(Campaign.status == CampaignStatus.ACTIVE)
+        )).scalar()
+        total_rewards = (await session.execute(
+            select(sa_func.coalesce(sa_func.sum(Transaction.amount), 0))
+            .where(Transaction.tx_type == TransactionType.TASK_REWARD, Transaction.amount > 0)
+        )).scalar()
+        total_deposits = (await session.execute(
+            select(sa_func.coalesce(sa_func.sum(Deposit.amount), 0))
+            .where(Deposit.status == DepositStatus.CONFIRMED)
+        )).scalar()
+
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    await query.edit_message_text(
+        f"📊 <b>PLATFORM STATS</b>\n\n"
+        f"👥 Users: <b>{total_users:,}</b>\n"
+        f"📋 Active Campaigns: <b>{active_campaigns}</b>\n"
+        f"💰 Total Rewards: <b>{fmt_usdt(total_rewards)} USDT</b>\n"
+        f"💵 Total Deposits: <b>{fmt_usdt(total_deposits)} USDT</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back", callback_data="admin:back")]
+        ]),
+    )
+
+
+async def _admin_fraud(query) -> None:
+    async with get_session() as session:
+        from sqlalchemy import select, func as sa_func
+        from models.fraud_flag import FraudFlag, FlagSeverity
+
+        unreviewed = (await session.execute(
+            select(sa_func.count(FraudFlag.id))
+            .where(FraudFlag.reviewed == False)
+        )).scalar()
+        critical = (await session.execute(
+            select(sa_func.count(FraudFlag.id))
+            .where(FraudFlag.reviewed == False, FraudFlag.severity == FlagSeverity.CRITICAL)
+        )).scalar()
+        high = (await session.execute(
+            select(sa_func.count(FraudFlag.id))
+            .where(FraudFlag.reviewed == False, FraudFlag.severity == FlagSeverity.HIGH)
+        )).scalar()
+
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    await query.edit_message_text(
+        f"🛡 <b>FRAUD MONITOR</b>\n\n"
+        f"Unreviewed flags: <b>{unreviewed}</b>\n"
+        f"🔴 Critical: <b>{critical}</b>\n"
+        f"🟠 High: <b>{high}</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back", callback_data="admin:back")]
+        ]),
+    )
+
+
+async def _admin_settings(query) -> None:
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    settings_text = (
+        f"⚙️ <b>PLATFORM SETTINGS</b>\n\n"
+        f"Min Withdrawal: <b>{settings.MIN_WITHDRAWAL} USDT</b>\n"
+        f"Max Withdrawal: <b>{settings.MAX_WITHDRAWAL} USDT</b>\n"
+        f"Referral Reward: <b>{settings.REFERRAL_REWARD} USDT</b>\n"
+        f"Commission: <b>{settings.REFERRAL_COMMISSION_PCT}%</b>\n"
+        f"Auto Payout: <b>{'ON' if settings.AUTO_PAYOUT_ENABLED else 'OFF'}</b>\n"
+        f"Maintenance: <b>{'ON' if settings.MAINTENANCE_MODE else 'OFF'}</b>\n"
+        f"Force Join: <b>{'ON' if settings.FORCE_JOIN_ENABLED else 'OFF'}</b>\n"
+        f"Fraud Auto-Ban Score: <b>{settings.FRAUD_AUTO_BAN_SCORE}</b>"
+    )
+    await query.edit_message_text(
+        settings_text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back", callback_data="admin:back")]
+        ]),
+    )
+
+
+async def _admin_audit(query) -> None:
+    async with get_session() as session:
+        from sqlalchemy import select
+        from models.audit_log import AuditLog
+
+        result = await session.execute(
+            select(AuditLog).order_by(AuditLog.created_at.desc()).limit(5)
+        )
+        logs = result.scalars().all()
+
+    lines = [f"📜 <b>AUDIT LOGS (Last 5)</b>\n"]
+    for entry in logs:
+        lines.append(
+            f"• [{fmt_datetime(entry.created_at)}] "
+            f"Admin {entry.admin_id}: {entry.action} on {entry.target_type} #{entry.target_id}"
+        )
+
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    await query.edit_message_text(
+        "\n".join(lines) or "No audit logs yet.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back", callback_data="admin:back")]
+        ]),
+    )
+
+
+async def _admin_broadcast_prompt(query, context) -> None:
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    context.user_data["awaiting_broadcast"] = True
+    await query.edit_message_text(
+        "📢 <b>BROADCAST</b>\n\nSend your message to broadcast to ALL users.\n\n"
+        "⚠️ This cannot be undone.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel", callback_data="admin:back")]
+        ]),
+    )
+
+
+async def _admin_ban_user(query, target_user_id: int, admin_id: int) -> None:
+    async with get_session() as session:
+        async with session.begin():
+            from models.user import User, UserStatus
+            from models.audit_log import AuditLog
+
+            user = await session.get(User, target_user_id)
+            if not user:
+                await query.edit_message_text("❌ User not found.")
+                return
+
+            old_status = user.status
+            user.status = UserStatus.BANNED
+
+            audit = AuditLog(
+                admin_id=admin_id,
+                action="BAN_USER",
+                target_type="user",
+                target_id=target_user_id,
+                old_value={"status": old_status},
+                new_value={"status": "BANNED"},
+            )
+            session.add(audit)
+
+    await query.edit_message_text(
+        f"✅ User {target_user_id} has been banned.",
+        reply_markup=user_action_keyboard(target_user_id, "BANNED"),
+    )
+
+
+async def _admin_unban_user(query, target_user_id: int, admin_id: int) -> None:
+    async with get_session() as session:
+        async with session.begin():
+            from models.user import User, UserStatus
+            from models.audit_log import AuditLog
+
+            user = await session.get(User, target_user_id)
+            if not user:
+                await query.edit_message_text("❌ User not found.")
+                return
+
+            user.status = UserStatus.ACTIVE
+            audit = AuditLog(
+                admin_id=admin_id,
+                action="UNBAN_USER",
+                target_type="user",
+                target_id=target_user_id,
+                old_value={"status": "BANNED"},
+                new_value={"status": "ACTIVE"},
+            )
+            session.add(audit)
+
+    await query.edit_message_text(f"✅ User {target_user_id} has been unbanned.")
+
+
+async def _admin_approve_campaign(query, campaign_id: int, admin_id: int) -> None:
+    async with get_session() as session:
+        async with session.begin():
+            from services.campaign_service import CampaignService
+            from models.audit_log import AuditLog
+
+            campaign = await CampaignService.approve_campaign(session, campaign_id, admin_id)
+            audit = AuditLog(
+                admin_id=admin_id,
+                action="APPROVE_CAMPAIGN",
+                target_type="campaign",
+                target_id=campaign_id,
+            )
+            session.add(audit)
+
+    await query.edit_message_text(
+        f"✅ Campaign #{campaign_id} approved and pending funding."
+    )
+
+
+async def _admin_reject_campaign(query, campaign_id: int, admin_id: int) -> None:
+    async with get_session() as session:
+        async with session.begin():
+            from models.campaign import Campaign, CampaignStatus
+            from models.audit_log import AuditLog
+
+            campaign = await session.get(Campaign, campaign_id)
+            if campaign:
+                campaign.status = CampaignStatus.CANCELLED
+            audit = AuditLog(
+                admin_id=admin_id,
+                action="REJECT_CAMPAIGN",
+                target_type="campaign",
+                target_id=campaign_id,
+            )
+            session.add(audit)
+
+    await query.edit_message_text(f"❌ Campaign #{campaign_id} rejected.")
+
+
+async def _admin_pause_campaign(query, campaign_id: int, admin_id: int) -> None:
+    async with get_session() as session:
+        async with session.begin():
+            from services.campaign_service import CampaignService
+            await CampaignService.pause_campaign(session, campaign_id, admin_id)
+
+    await query.edit_message_text(f"⏸ Campaign #{campaign_id} paused.")
+
+
+async def _admin_approve_sponsor(query, sponsor_id: int, admin_id: int) -> None:
+    async with get_session() as session:
+        async with session.begin():
+            from services.sponsor_service import SponsorService
+            await SponsorService.approve_sponsor(session, sponsor_id, admin_id)
+
+    await query.edit_message_text(f"✅ Sponsor #{sponsor_id} approved.")
+
+
+async def _admin_approve_withdrawal(query, withdrawal_id: int, admin_id: int) -> None:
+    """Manually trigger withdrawal processing."""
+    async with get_session() as session:
+        async with session.begin():
+            from services.withdrawal_service import WithdrawalService
+            success = await WithdrawalService.process_withdrawal(session, withdrawal_id)
+
+    if success:
+        await query.edit_message_text(f"✅ Withdrawal #{withdrawal_id} processed successfully.")
+    else:
+        await query.edit_message_text(f"❌ Withdrawal #{withdrawal_id} processing failed. User refunded.")
+
+
+async def _admin_reject_withdrawal(query, withdrawal_id: int, admin_id: int) -> None:
+    async with get_session() as session:
+        async with session.begin():
+            from models.withdrawal import Withdrawal, WithdrawalStatus
+            from services.withdrawal_service import WithdrawalService
+
+            wd = await session.get(Withdrawal, withdrawal_id)
+            if wd and wd.status == WithdrawalStatus.PENDING:
+                await WithdrawalService._refund_failed_withdrawal(
+                    session, wd, "Rejected by admin"
+                )
+
+    await query.edit_message_text(f"❌ Withdrawal #{withdrawal_id} rejected. User refunded.")

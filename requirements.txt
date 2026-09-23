@@ -1,0 +1,30 @@
+# Core
+python-telegram-bot==21.6
+asyncio==3.4.3
+
+# Database
+SQLAlchemy==2.0.36
+asyncpg==0.29.0
+alembic==1.14.0
+psycopg2-binary==2.9.10
+
+# Redis
+redis==5.2.1
+
+# Blockchain
+web3==6.15.1
+
+# Background Jobs
+APScheduler==3.10.4
+
+# Config & Validation
+pydantic==2.10.3
+pydantic-settings==2.6.1
+python-dotenv==1.0.1
+
+# Logging
+structlog==24.4.0
+
+# Utilities
+httpx==0.28.1
+aiohttp==3.11.10

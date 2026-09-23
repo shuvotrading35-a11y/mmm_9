@@ -1,0 +1,25 @@
+[Unit]
+Description=Global Task Earn — Background Worker
+After=network.target postgresql.service redis.service
+Requires=postgresql.service redis.service
+
+[Service]
+Type=simple
+User=gte
+Group=gte
+WorkingDirectory=/opt/global_task_earn
+EnvironmentFile=/opt/global_task_earn/.env
+ExecStart=/opt/global_task_earn/venv/bin/python worker.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gte-worker
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/global_task_earn/logs
+
+[Install]
+WantedBy=multi-user.target

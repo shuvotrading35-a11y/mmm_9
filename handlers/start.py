@@ -1,0 +1,92 @@
+"""
+Start Handler — /start command, user registration, referral parsing.
+"""
+import structlog
+from telegram import Update
+from telegram.ext import ContextTypes
+
+from database import get_session
+from keyboards.user_keyboards import main_menu_keyboard
+from middlewares.rate_limit_middleware import RateLimitMiddleware
+from services.user_service import UserService
+
+log = structlog.get_logger(__name__)
+
+STATES = {}  # No conversation state needed for /start
+
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /start [ref_CODE] — register or welcome back user."""
+    user = update.effective_user
+
+    # Rate limit
+    if not await RateLimitMiddleware.check_start(user.id):
+        await update.message.reply_text("⏳ Too many requests. Please wait a moment.")
+        return
+
+    # Parse referral code from deep link: /start ref_ABC123
+    referrer_code = None
+    if context.args:
+        arg = context.args[0]
+        if arg.startswith("ref_"):
+            referrer_code = arg[4:]
+        elif arg.startswith("REF"):
+            referrer_code = arg
+
+    async with get_session() as session:
+        async with session.begin():
+            db_user, is_new = await UserService.get_or_create_user(
+                session=session,
+                tg_user=user,
+                referrer_code=referrer_code,
+            )
+            is_sponsor = db_user.is_sponsor
+
+    from utils.decimal_utils import fmt_usdt
+
+    if is_new:
+        text = (
+            f"🏛 <b>GLOBAL TASK EARN</b>\n\n"
+            f"Welcome, <b>{user.first_name}</b>! 👋\n\n"
+            f"💰 Complete Telegram tasks and earn real USDT.\n"
+            f"🎁 Invite friends — earn commission on every task they complete.\n"
+            f"💳 Withdraw to your BSC wallet instantly.\n\n"
+            f"Your balance: <b>0.00000000 USDT</b>\n\n"
+            f"⭐ Start earning now!"
+        )
+    else:
+        balance = fmt_usdt(db_user.balance)
+        text = (
+            f"🏛 <b>GLOBAL TASK EARN</b>\n\n"
+            f"Welcome back, <b>{user.first_name}</b>! 👋\n\n"
+            f"💰 Balance: <b>{balance} USDT</b>\n\n"
+            f"Use the menu below to navigate."
+        )
+
+    await update.message.reply_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=main_menu_keyboard(is_sponsor=is_sponsor),
+    )
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /help command."""
+    text = (
+        "🆘 <b>HELP — GLOBAL TASK EARN</b>\n\n"
+        "<b>How it works:</b>\n"
+        "1️⃣ Browse tasks with 📋 View Tasks\n"
+        "2️⃣ Complete the task (join a channel/group)\n"
+        "3️⃣ Press ✅ DONE to verify and earn USDT\n"
+        "4️⃣ Withdraw earnings to your BSC wallet\n\n"
+        "<b>Commands:</b>\n"
+        "/start — Main menu\n"
+        "/profile — Your profile & earnings\n"
+        "/tasks — Browse tasks\n"
+        "/withdraw — Request withdrawal\n"
+        "/referral — Your referral link\n"
+        "/stats — Platform statistics\n\n"
+        "<b>Support:</b>\n"
+        "Use 🆘 Support in the menu to create a ticket."
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
