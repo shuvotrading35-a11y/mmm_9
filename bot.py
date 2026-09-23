@@ -13,7 +13,7 @@ from telegram.ext import (
 from config import settings
 from database import init_db, close_db
 
-from handlers.start import cmd_start, cmd_help
+from handlers.start import cmd_start, cmd_help, handle_main_menu, handle_user_cancel
 from handlers.profile import handle_profile, profile_conv_handler
 from handlers.tasks import (
     handle_tasks, handle_task_done, handle_task_skip, handle_task_next
@@ -153,6 +153,10 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.Regex(r"^📣 Promotion$"), handle_promotion))
     app.add_handler(MessageHandler(filters.Regex(r"^🆘 Support$"), handle_support_menu))
     app.add_handler(MessageHandler(filters.Regex(r"^💼 Sponsor Panel$"), sponsor_panel_handler))
+
+    # ── Navigation buttons ──
+    app.add_handler(MessageHandler(filters.Regex(r"^🏠 Main Menu$"), handle_main_menu))
+    app.add_handler(MessageHandler(filters.Regex(r"^❌ Cancel$"), handle_user_cancel))
 
     # ── Callback handlers (Inline) ──
     app.add_handler(CallbackQueryHandler(handle_task_done, pattern=r"^task_done:\d+$"))
