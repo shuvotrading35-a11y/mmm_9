@@ -82,6 +82,20 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         await _admin_broadcast_prompt(query, context)
     elif action == "audit":
         await _admin_audit(query)
+
+    # ── NEW: view branches ──
+    elif action == "sponsor_view" and len(parts) > 2:
+        await _admin_view_sponsor(query, int(parts[2]))
+    elif action == "campaign_view" and len(parts) > 2:
+        await _admin_view_campaign(query, int(parts[2]))
+    elif action == "wd_view" and len(parts) > 2:
+        await _admin_view_withdrawal(query, int(parts[2]))
+    elif action == "banned":
+        await _admin_banned_list(query)
+    elif action == "flagged":
+        await _admin_flagged_list(query)
+    # ── END NEW ──
+
     elif action == "back":
         await query.edit_message_text(
             "🛡 <b>ADMIN PANEL</b>",
@@ -104,18 +118,18 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
     elif action.startswith("wd_reject") and len(parts) > 2:
         await _admin_reject_withdrawal(query, int(parts[2]), user.id)
     else:
+        # ── CHANGED: show unknown action instead of silently returning to panel ──
         await query.edit_message_text(
-            "🛡 <b>ADMIN PANEL</b>",
+            f"❓ Unknown action: <code>{data}</code>",
             parse_mode="HTML",
         )
 
 
 # ══════════════════════════════════════════════════════════════════
-# Reply keyboard handlers — new
+# Reply keyboard handlers
 # ══════════════════════════════════════════════════════════════════
 
 async def admin_panel_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Re-show admin main reply keyboard."""
     if not _require_admin(update.effective_user.id):
         return
     await update.message.reply_text(
@@ -171,8 +185,7 @@ async def admin_sponsors_reply(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if buttons:
         await update.message.reply_text(
-            text,
-            parse_mode="HTML",
+            text, parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(buttons),
         )
     else:
@@ -360,8 +373,7 @@ async def admin_fraud_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         from models.fraud_flag import FraudFlag, FlagSeverity
 
         unreviewed = (await session.execute(
-            select(sa_func.count(FraudFlag.id))
-            .where(FraudFlag.reviewed == False)
+            select(sa_func.count(FraudFlag.id)).where(FraudFlag.reviewed == False)
         )).scalar()
         critical = (await session.execute(
             select(sa_func.count(FraudFlag.id))
@@ -850,3 +862,155 @@ async def _admin_reject_withdrawal(query, withdrawal_id: int, admin_id: int) -> 
                 )
 
     await query.edit_message_text(f"❌ Withdrawal #{withdrawal_id} rejected. User refunded.")
+
+
+# ══════════════════════════════════════════════════════════════════
+# NEW: View handlers — sponsor / campaign / withdrawal detail
+# ══════════════════════════════════════════════════════════════════
+
+async def _admin_view_sponsor(query, sponsor_id: int) -> None:
+    async with get_session() as session:
+        from models.sponsor import Sponsor
+        from models.user import User
+
+        sponsor = await session.get(Sponsor, sponsor_id)
+        if not sponsor:
+            await query.edit_message_text("❌ Sponsor not found.")
+            return
+
+        user = await session.get(User, sponsor.user_id)
+
+    username = f"@{user.username}" if user and user.username else "—"
+    status_str = sponsor.status.value if hasattr(sponsor.status, "value") else str(sponsor.status)
+
+    text = (
+        f"💼 <b>SPONSOR #{sponsor.id}</b>\n\n"
+        f"━━━━━━ PROFILE ━━━━━━\n"
+        f"👤 User: <code>{sponsor.user_id}</code> {username}\n"
+        f"📌 Status: <b>{status_str}</b>\n\n"
+        f"━━━━━━ WALLET ━━━━━━\n"
+        f"💰 Available: <b>{fmt_usdt(sponsor.available_balance)} USDT</b>\n"
+        f"🔒 Reserved:  <b>{fmt_usdt(sponsor.reserved_balance)} USDT</b>\n"
+        f"💸 Total Spent: <b>{fmt_usdt(sponsor.total_spent)} USDT</b>\n"
+    )
+
+    buttons = []
+    if status_str == "PENDING":
+        buttons.append([
+            InlineKeyboardButton("✅ Approve", callback_data=f"admin:sponsor_approve:{sponsor.id}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"admin:sponsor_reject:{sponsor.id}"),
+        ])
+    if status_str == "APPROVED":
+        buttons.append([InlineKeyboardButton(
+            "🚫 Suspend", callback_data=f"admin:sponsor_suspend:{sponsor.id}"
+        )])
+
+    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin:sponsors")])
+
+    await query.edit_message_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def _admin_view_campaign(query, campaign_id: int) -> None:
+    async with get_session() as session:
+        from models.campaign import Campaign
+
+        campaign = await session.get(Campaign, campaign_id)
+        if not campaign:
+            await query.edit_message_text("❌ Campaign not found.")
+            return
+
+    status_str = campaign.status.value if hasattr(campaign.status, "value") else str(campaign.status)
+
+    text = (
+        f"📋 <b>CAMPAIGN #{campaign.id}</b>\n\n"
+        f"📝 Title: {campaign.title}\n"
+        f"📌 Status: <b>{status_str}</b>\n"
+        f"💰 Budget: <b>{fmt_usdt(campaign.total_budget)} USDT</b>\n"
+        f"💸 Spent: <b>{fmt_usdt(campaign.spent_budget)} USDT</b>\n"
+    )
+
+    await query.edit_message_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=campaign_action_keyboard(campaign_id, status_str),
+    )
+
+
+async def _admin_view_withdrawal(query, withdrawal_id: int) -> None:
+    async with get_session() as session:
+        from models.withdrawal import Withdrawal
+
+        wd = await session.get(Withdrawal, withdrawal_id)
+        if not wd:
+            await query.edit_message_text("❌ Withdrawal not found.")
+            return
+
+    status_str = wd.status.value if hasattr(wd.status, "value") else str(wd.status)
+
+    text = (
+        f"💳 <b>WITHDRAWAL #{wd.id}</b>\n\n"
+        f"👤 User: <code>{wd.user_id}</code>\n"
+        f"💰 Amount: <b>{fmt_usdt(wd.amount)} USDT</b>\n"
+        f"📌 Status: <b>{status_str}</b>\n"
+        f"🏦 Wallet: <code>{getattr(wd, 'wallet_address', '—')}</code>\n"
+    )
+
+    await query.edit_message_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=withdrawal_action_keyboard(withdrawal_id),
+    )
+
+
+async def _admin_banned_list(query) -> None:
+    async with get_session() as session:
+        from sqlalchemy import select
+        from models.user import User, UserStatus
+
+        result = await session.execute(
+            select(User).where(User.status == UserStatus.BANNED).limit(20)
+        )
+        banned = result.scalars().all()
+
+    lines = ["🚫 <b>BANNED USERS</b>\n"]
+    for u in banned:
+        lines.append(f"• <code>{u.id}</code> @{u.username or '—'}")
+    if not banned:
+        lines.append("No banned users.")
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back", callback_data="admin:back")]
+        ]),
+    )
+
+
+async def _admin_flagged_list(query) -> None:
+    async with get_session() as session:
+        from sqlalchemy import select
+        from models.user import User, UserStatus
+
+        result = await session.execute(
+            select(User).where(User.status == UserStatus.FLAGGED).limit(20)
+        )
+        flagged = result.scalars().all()
+
+    lines = ["⚠️ <b>FLAGGED USERS</b>\n"]
+    for u in flagged:
+        lines.append(f"• <code>{u.id}</code> @{u.username or '—'} — score {u.fraud_score}")
+    if not flagged:
+        lines.append("No flagged users.")
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back", callback_data="admin:back")]
+        ]),
+    )
