@@ -1,9 +1,19 @@
 """
-Sponsor Keyboards — ReplyKeyboard (styled) for main menu.
+Sponsor Keyboards — ReplyKeyboard (styled) for main menu,
+InlineKeyboard for per-campaign actions.
 Requires python-telegram-bot>=22.7.
 """
-from telegram import ReplyKeyboardMarkup, KeyboardButton
+from telegram import (
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 
+
+# ══════════════════════════════════════════════════════════════════
+# Reply keyboards — main navigation
+# ══════════════════════════════════════════════════════════════════
 
 def sponsor_main_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
@@ -83,3 +93,71 @@ def sponsor_back_reply_keyboard() -> ReplyKeyboardMarkup:
         resize_keyboard=True,
         is_persistent=True,
     )
+
+
+# ══════════════════════════════════════════════════════════════════
+# Inline keyboards — per-campaign actions (need campaign_id)
+# ══════════════════════════════════════════════════════════════════
+
+def campaign_actions_keyboard(campaign_id: int, status: str) -> InlineKeyboardMarkup:
+    """Action buttons for a specific campaign."""
+    buttons = []
+
+    status_upper = (status or "").upper()
+
+    if status_upper == "PENDING_FUNDING":
+        buttons.append([InlineKeyboardButton(
+            "💰 Fund Campaign",
+            callback_data=f"sponsor:fund:{campaign_id}"
+        )])
+
+    if status_upper == "ACTIVE":
+        buttons.append([InlineKeyboardButton(
+            "⏸ Pause",
+            callback_data=f"sponsor:pause:{campaign_id}"
+        )])
+
+    if status_upper == "PAUSED":
+        buttons.append([InlineKeyboardButton(
+            "▶️ Resume",
+            callback_data=f"sponsor:resume:{campaign_id}"
+        )])
+
+    buttons.append([InlineKeyboardButton(
+        "📊 Analytics",
+        callback_data=f"sponsor:analytics:{campaign_id}"
+    )])
+
+    buttons.append([InlineKeyboardButton(
+        "🔙 Back",
+        callback_data="sponsor:campaigns"
+    )])
+
+    return InlineKeyboardMarkup(buttons)
+
+
+def deposit_submitted_keyboard() -> InlineKeyboardMarkup:
+    """After tx hash submitted."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Back to Panel", callback_data="sponsor:back")],
+    ])
+
+
+# ══════════════════════════════════════════════════════════════════
+# Legacy / compatibility aliases
+# (some old code paths may still import these names)
+# ══════════════════════════════════════════════════════════════════
+
+def sponsor_main_keyboard() -> ReplyKeyboardMarkup:
+    """Alias — old name kept for compatibility."""
+    return sponsor_main_reply_keyboard()
+
+
+def task_type_keyboard() -> ReplyKeyboardMarkup:
+    """Alias — old name kept for compatibility."""
+    return sponsor_task_type_reply_keyboard()
+
+
+def duration_keyboard() -> ReplyKeyboardMarkup:
+    """Alias — old name kept for compatibility."""
+    return sponsor_duration_reply_keyboard()
