@@ -3,7 +3,7 @@ User Service — registration, profile management, referral chain setup.
 """
 import secrets
 import string
-from typing import Optional
+from typing import Optional, Tuple          # <-- Tuple যোগ করলাম
 
 import structlog
 from sqlalchemy import select
@@ -15,7 +15,6 @@ from models.referral import Referral
 from models.user import User, UserStatus
 
 log = structlog.get_logger(__name__)
-
 
 def _generate_referral_code(user_id: int) -> str:
     """Generate a unique referral code for a user."""
