@@ -92,33 +92,50 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(text, parse_mode="HTML")
 
 
-async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """🏠 Main Menu button — re-show the main menu."""
-    user = update.effective_user
-
-    is_sponsor = False
+async def _is_user_sponsor(user_id: int) -> bool:
+    """Check if user has an APPROVED sponsor account."""
     try:
         async with get_session() as session:
             from services.sponsor_service import SponsorService
-            sponsor = await SponsorService.get_sponsor_by_user(session, user.id)
+            sponsor = await SponsorService.get_sponsor_by_user(session, user_id)
             if sponsor is not None:
                 status_str = (
                     sponsor.status.value if hasattr(sponsor.status, "value")
                     else str(sponsor.status)
                 )
-                is_sponsor = (status_str == "APPROVED")
+                return status_str == "APPROVED"
     except Exception:
-        log.exception("Failed to check sponsor status")
-        # fall back to user flag
-        try:
-            async with get_session() as session:
-                db_user = await UserService.get_user(session, user.id)
-                is_sponsor = bool(db_user and db_user.is_sponsor)
-        except Exception:
-            pass
+        log.exception("Failed to check sponsor status via SponsorService")
+
+    # Fallback: user flag
+    try:
+        async with get_session() as session:
+            db_user = await UserService.get_user(session, user_id)
+            return bool(db_user and db_user.is_sponsor)
+    except Exception:
+        log.exception("Failed to check sponsor flag on user")
+        return False
+
+
+async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """🏠 Main Menu button — re-show the main menu."""
+    user = update.effective_user
+    is_sponsor = await _is_user_sponsor(user.id)
 
     await update.message.reply_text(
         "🏠 <b>Main Menu</b>",
         parse_mode="HTML",
+        reply_markup=main_menu_keyboard(is_sponsor=is_sponsor),
+    )
+
+
+async def handle_user_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """❌ Cancel button — clear user_data and return to main menu."""
+    context.user_data.clear()
+    user = update.effective_user
+    is_sponsor = await _is_user_sponsor(user.id)
+
+    await update.message.reply_text(
+        "❌ Cancelled.",
         reply_markup=main_menu_keyboard(is_sponsor=is_sponsor),
     )
