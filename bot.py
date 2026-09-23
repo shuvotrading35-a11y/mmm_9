@@ -53,11 +53,7 @@ log = structlog.get_logger(__name__)
 
 
 async def post_init(application: Application) -> None:
-    """Initialize database and services after bot starts."""
-    await init_db()
-    log.info("Database initialized")
-
-    # Set bot commands
+    """Set bot commands after bot starts. DB is already initialized in run_*()."""
     from telegram import BotCommand
     commands = [
         BotCommand("start", "Start the bot"),
@@ -216,6 +212,16 @@ async def error_handler(update: object, context) -> None:
 async def run_webhook(app: Application) -> None:
     """Run bot in webhook mode."""
     log.info("Starting in webhook mode", url=settings.WEBHOOK_URL)
+
+    # ── Database / Redis প্রস্তুত ──
+    try:
+        log.info("Connecting to database and Redis...")
+        await init_db()
+        log.info("Database initialized")
+    except Exception:
+        log.exception("init_db failed")
+        raise
+
     await app.initialize()
     await app.start()
     await app.updater.start_webhook(
@@ -248,6 +254,16 @@ async def run_webhook(app: Application) -> None:
 async def run_polling(app: Application) -> None:
     """Run bot in polling mode."""
     log.info("Starting in polling mode")
+
+    # ── Database / Redis প্রস্তুত ──
+    try:
+        log.info("Connecting to database and Redis...")
+        await init_db()
+        log.info("Database initialized")
+    except Exception:
+        log.exception("init_db failed")
+        raise
+
     async with app:
         await app.start()
         await app.updater.start_polling(
