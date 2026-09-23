@@ -1,72 +1,85 @@
 """
-Sponsor Keyboards — inline keyboards for sponsor panel.
+Sponsor Keyboards — ReplyKeyboard (styled) for main menu.
+Requires python-telegram-bot>=22.7.
 """
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import ReplyKeyboardMarkup, KeyboardButton
 
 
-def sponsor_main_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("➕ Create Campaign", callback_data="sponsor:create_campaign"),
-            InlineKeyboardButton("📋 My Campaigns", callback_data="sponsor:campaigns"),
+def sponsor_main_reply_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton("➕ Create Campaign", style="primary"),
+                KeyboardButton("📋 My Campaigns"),
+            ],
+            [
+                KeyboardButton("💰 Deposit USDT", style="success"),
+                KeyboardButton("📊 Analytics"),
+            ],
+            [
+                KeyboardButton("💼 Wallet Info"),
+                KeyboardButton("🆘 Support"),
+            ],
+            [
+                KeyboardButton("🔙 Back to Main Menu", style="danger"),
+            ],
         ],
-        [
-            InlineKeyboardButton("💰 Deposit USDT", callback_data="sponsor:deposit"),
-            InlineKeyboardButton("📊 Analytics", callback_data="sponsor:analytics"),
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Sponsor Panel — choose an option...",
+    )
+
+
+def sponsor_task_type_reply_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton("📢 Channel Join", style="primary")],
+            [KeyboardButton("👥 Group Join", style="primary")],
+            [KeyboardButton("🤖 Bot Start", style="primary")],
+            [KeyboardButton("📢👥 Channel + Group", style="primary")],
+            [KeyboardButton("❌ Cancel Sponsor", style="danger")],
         ],
-        [
-            InlineKeyboardButton("💼 Wallet Info", callback_data="sponsor:wallet"),
-            InlineKeyboardButton("🆘 Support", callback_data="sponsor:support"),
+        resize_keyboard=True,
+        one_time_keyboard=True,
+        input_field_placeholder="Choose task type...",
+    )
+
+
+def sponsor_duration_reply_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton("1 Day", style="primary"),
+                KeyboardButton("3 Days", style="primary"),
+            ],
+            [
+                KeyboardButton("7 Days", style="primary"),
+                KeyboardButton("30 Days", style="primary"),
+            ],
+            [KeyboardButton("❌ Cancel Sponsor", style="danger")],
         ],
-    ])
+        resize_keyboard=True,
+        one_time_keyboard=True,
+        input_field_placeholder="Choose duration...",
+    )
 
 
-def task_type_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 Channel Join", callback_data="sponsor:type:CHANNEL_JOIN")],
-        [InlineKeyboardButton("👥 Group Join", callback_data="sponsor:type:GROUP_JOIN")],
-        [InlineKeyboardButton("🤖 Bot Start", callback_data="sponsor:type:BOT_START")],
-        [InlineKeyboardButton("📢👥 Channel + Group", callback_data="sponsor:type:CHANNEL_GROUP_JOIN")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="sponsor:cancel")],
-    ])
+def sponsor_cancel_reply_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton("❌ Cancel Sponsor", style="danger")]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
 
 
-def duration_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("1 Day", callback_data="sponsor:duration:1"),
-            InlineKeyboardButton("3 Days", callback_data="sponsor:duration:3"),
+def sponsor_back_reply_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton("🔙 Back to Sponsor Panel", style="primary"),
+                KeyboardButton("🏠 Main Menu"),
+            ],
         ],
-        [
-            InlineKeyboardButton("7 Days", callback_data="sponsor:duration:7"),
-            InlineKeyboardButton("30 Days", callback_data="sponsor:duration:30"),
-        ],
-        [InlineKeyboardButton("❌ Cancel", callback_data="sponsor:cancel")],
-    ])
-
-
-def campaign_actions_keyboard(campaign_id: int, status: str) -> InlineKeyboardMarkup:
-    buttons = []
-    if status == "PENDING_FUNDING":
-        buttons.append([InlineKeyboardButton(
-            "💰 Fund Campaign", callback_data=f"sponsor:fund:{campaign_id}"
-        )])
-    if status == "ACTIVE":
-        buttons.append([InlineKeyboardButton(
-            "⏸ Pause", callback_data=f"sponsor:pause:{campaign_id}"
-        )])
-    if status == "PAUSED":
-        buttons.append([InlineKeyboardButton(
-            "▶️ Resume", callback_data=f"sponsor:resume:{campaign_id}"
-        )])
-    buttons.append([InlineKeyboardButton(
-        "📊 Analytics", callback_data=f"sponsor:analytics:{campaign_id}"
-    )])
-    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="sponsor:campaigns")])
-    return InlineKeyboardMarkup(buttons)
-
-
-def deposit_submitted_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back to Panel", callback_data="sponsor:back")],
-    ])
+        resize_keyboard=True,
+        is_persistent=True,
+    )
