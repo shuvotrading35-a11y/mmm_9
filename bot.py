@@ -67,6 +67,26 @@ async def post_init(application: Application) -> None:
     await application.bot.set_my_commands(commands)
     log.info("Bot commands set")
 
+    # ── NotificationService-এ bot সেট করা (init হওয়ার পর) ──
+    try:
+        from services.notification_service import NotificationService
+        # সম্ভাব্য সব মেথড নাম চেক করা
+        for method_name in ("set_bot", "set_application", "configure", "init"):
+            method = getattr(NotificationService, method_name, None)
+            if callable(method):
+                try:
+                    method(application.bot)
+                except TypeError:
+                    method(bot=application.bot)
+                log.info("NotificationService initialized", method=method_name)
+                break
+        else:
+            log.warning("NotificationService has no known setter method")
+    except ImportError:
+        log.warning("NotificationService module not found — skipping")
+    except Exception:
+        log.exception("NotificationService setup failed")
+
 
 async def post_shutdown(application: Application) -> None:
     """Cleanup on shutdown."""
