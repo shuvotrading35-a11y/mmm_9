@@ -112,25 +112,26 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
     elif action == "broadcast":
         await _admin_broadcast_prompt(query, context)
 
-# ── Views of specific items ──
-elif action == "user_view" and len(parts) > 2:
-    await _admin_view_user(query, int(parts[2]))
-elif action == "sponsor_view" and len(parts) > 2:
-    await _admin_view_sponsor(query, int(parts[2]))
-elif action == "campaign_view" and len(parts) > 2:
-    await _admin_view_campaign(query, int(parts[2]))
-elif action == "campaign_delete" and len(parts) > 2:
-    await _admin_delete_campaign(query, int(parts[2]), user.id)
-elif action == "wd_view" and len(parts) > 2:
-    await _admin_view_withdrawal(query, int(parts[2]))
-elif action == "deposit_view" and len(parts) > 2:
-    await _admin_view_deposit(query, int(parts[2]))
-elif action == "banned":
-    await _admin_banned_list(query)
-elif action == "flagged":
-    await _admin_flagged_list(query)
-elif action == "user_search":
-    await _admin_user_search_prompt(query, context)
+    # ── Views of specific items ──
+    elif action == "user_view" and len(parts) > 2:
+        await _admin_view_user(query, int(parts[2]))
+    elif action == "sponsor_view" and len(parts) > 2:
+        await _admin_view_sponsor(query, int(parts[2]))
+    elif action == "campaign_view" and len(parts) > 2:
+        await _admin_view_campaign(query, int(parts[2]))
+    elif action == "campaign_delete" and len(parts) > 2:
+        await _admin_delete_campaign(query, int(parts[2]), user.id)
+    elif action == "wd_view" and len(parts) > 2:
+        await _admin_view_withdrawal(query, int(parts[2]))
+    elif action == "deposit_view" and len(parts) > 2:
+        await _admin_view_deposit(query, int(parts[2]))
+    elif action == "banned":
+        await _admin_banned_list(query)
+    elif action == "flagged":
+        await _admin_flagged_list(query)
+    elif action == "user_search":
+        await _admin_user_search_prompt(query, context)
+
     # ── Actions ──
     elif action == "back":
         await _safe_edit(query, "🛡 <b>ADMIN PANEL</b>", parse_mode="HTML")
@@ -174,7 +175,6 @@ elif action == "user_search":
             f"❓ Unknown action: <code>{data}</code>",
             parse_mode="HTML",
         )
-
 
 # ══════════════════════════════════════════════════════════════════
 # Reply keyboard handlers
