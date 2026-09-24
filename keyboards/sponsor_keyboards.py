@@ -20,15 +20,15 @@ def sponsor_main_reply_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [
                 KeyboardButton("➕ Create Campaign", style="primary"),
-                KeyboardButton("📋 My Campaigns"),
+                KeyboardButton("📋 My Campaigns", style="primary"),
             ],
             [
                 KeyboardButton("💰 Deposit USDT", style="success"),
-                KeyboardButton("📊 Analytics"),
+                KeyboardButton("📊 Analytics", style="primary"),
             ],
             [
-                KeyboardButton("💼 Wallet Info"),
-                KeyboardButton("🆘 Support"),
+                KeyboardButton("💼 Wallet Info", style="primary"),
+                KeyboardButton("🆘 Sponsor Support", style="primary"),
             ],
             [
                 KeyboardButton("🔙 Back to Main Menu", style="danger"),
@@ -87,7 +87,7 @@ def sponsor_back_reply_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [
                 KeyboardButton("🔙 Back to Sponsor Panel", style="primary"),
-                KeyboardButton("🏠 Main Menu"),
+                KeyboardButton("🏠 Main Menu", style="primary"),
             ],
         ],
         resize_keyboard=True,
@@ -97,6 +97,7 @@ def sponsor_back_reply_keyboard() -> ReplyKeyboardMarkup:
 
 # ══════════════════════════════════════════════════════════════════
 # Inline keyboards — per-campaign actions (need campaign_id)
+# (style parameter doesn't apply to InlineKeyboardButton)
 # ══════════════════════════════════════════════════════════════════
 
 def campaign_actions_keyboard(campaign_id: int, status: str) -> InlineKeyboardMarkup:
@@ -145,7 +146,6 @@ def deposit_submitted_keyboard() -> InlineKeyboardMarkup:
 
 # ══════════════════════════════════════════════════════════════════
 # Legacy / compatibility aliases
-# (some old code paths may still import these names)
 # ══════════════════════════════════════════════════════════════════
 
 def sponsor_main_keyboard() -> ReplyKeyboardMarkup:
