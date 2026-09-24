@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Optional, List
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, delete as sa_delete
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +17,13 @@ from models.transaction import TransactionType
 from services.ledger_service import LedgerService, InsufficientFundsError
 
 log = structlog.get_logger(__name__)
+
+
+def _enum_str(v) -> str:
+    """Convert enum or str to string safely."""
+    if v is None:
+        return ""
+    return v.value if hasattr(v, "value") else str(v)
 
 
 class CampaignValidationError(Exception):
@@ -305,7 +312,7 @@ class CampaignService:
         return {
             "id": campaign.id,
             "title": campaign.title,
-            "status": campaign.status.value if hasattr(campaign.status, "value") else str(campaign.status),
+            "status": _enum_str(campaign.status),
             "view_count": campaign.view_count,
             "click_count": campaign.click_count,
             "completed_count": campaign.completed_count,
@@ -317,3 +324,92 @@ class CampaignService:
             "remaining_budget": campaign.remaining_budget,
             "expires_at": campaign.expires_at,
         }
+
+    @staticmethod
+    async def delete_campaign(
+        session: AsyncSession,
+        campaign_id: int,
+        actor_id: int,
+        actor_is_admin: bool = False,
+    ) -> dict:
+        """
+        Delete a campaign. If it has reserved budget, release it back to the sponsor.
+        Returns a summary dict with 'released' amount.
+        """
+        import hashlib
+        from models.task_completion import TaskCompletion
+        from models.task_skip import TaskSkip
+
+        result = await session.execute(
+            select(Campaign).where(Campaign.id == campaign_id)
+        )
+        campaign = result.scalar_one_or_none()
+        if not campaign:
+            raise CampaignValidationError("Campaign not found")
+
+        status_str = _enum_str(campaign.status)
+
+        # Business rules
+        if status_str == "COMPLETED":
+            raise CampaignValidationError("Completed campaigns cannot be deleted")
+
+        # Sponsors can only delete their own campaigns
+        if not actor_is_admin:
+            sponsor = await session.get(Sponsor, campaign.sponsor_id)
+            if not sponsor or sponsor.user_id != actor_id:
+                raise CampaignValidationError("Not your campaign")
+
+        reserved = campaign.reserved_budget or Decimal("0")
+        released = Decimal("0")
+
+        # Release reserved budget back to sponsor
+        if reserved > Decimal("0"):
+            release_key = hashlib.sha256(
+                f"delete_release:{campaign_id}:{settings.SECRET_SALT}".encode()
+            ).hexdigest()
+            try:
+                await LedgerService.release_campaign_budget(
+                    session=session,
+                    sponsor_id=campaign.sponsor_id,
+                    amount=reserved,
+                    campaign_id=campaign_id,
+                    idempotency_key=release_key,
+                    description=f"Budget release: deleted campaign #{campaign_id}",
+                )
+                released = reserved
+            except Exception as e:
+                log.error(
+                    "Failed to release budget on delete",
+                    campaign_id=campaign_id,
+                    error=str(e),
+                )
+
+        # Delete related rows to avoid FK violations
+        await session.execute(
+            sa_delete(TaskCompletion).where(TaskCompletion.campaign_id == campaign_id)
+        )
+        await session.execute(
+            sa_delete(TaskSkip).where(TaskSkip.campaign_id == campaign_id)
+        )
+
+        # Snapshot info before deleting
+        summary = {
+            "id": campaign.id,
+            "title": campaign.title,
+            "sponsor_id": campaign.sponsor_id,
+            "status": status_str,
+            "released": released,
+        }
+
+        await session.delete(campaign)
+        await session.flush()
+
+        log.info(
+            "Campaign deleted",
+            campaign_id=campaign_id,
+            actor_id=actor_id,
+            admin=actor_is_admin,
+            released=str(released),
+        )
+
+        return summary
