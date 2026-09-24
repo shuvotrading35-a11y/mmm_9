@@ -119,6 +119,8 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         await _admin_view_sponsor(query, int(parts[2]))
     elif action == "campaign_view" and len(parts) > 2:
         await _admin_view_campaign(query, int(parts[2]))
+		  elif action.startswith("campaign_delete") and len(parts) > 2:
+    await _admin_delete_campaign(query, int(parts[2]), user.id)
     elif action == "wd_view" and len(parts) > 2:
         await _admin_view_withdrawal(query, int(parts[2]))
     elif action == "deposit_view" and len(parts) > 2:
@@ -1970,3 +1972,49 @@ async def _notify_user(user_id: int, text: str) -> None:
         log.warning("NotificationService has no known user-send method")
     except Exception:
         log.exception("Failed to notify user", user_id=user_id)
+
+
+
+async def _admin_delete_campaign(query, campaign_id: int, admin_id: int) -> None:
+    """Admin force-delete a campaign."""
+    try:
+        async with get_session() as session:
+            async with session.begin():
+                from services.campaign_service import CampaignService, CampaignValidationError
+                from models.audit_log import AuditLog
+
+                summary = await CampaignService.delete_campaign(
+                    session=session,
+                    campaign_id=campaign_id,
+                    actor_id=admin_id,
+                    actor_is_admin=True,
+                )
+
+                session.add(AuditLog(
+                    admin_id=admin_id,
+                    action="DELETE_CAMPAIGN",
+                    target_type="campaign",
+                    target_id=campaign_id,
+                    old_value={"title": summary.get("title", ""),
+                               "status": summary.get("status", "")},
+                ))
+
+        released = summary.get("released", Decimal("0"))
+        released_line = ""
+        if released and released > Decimal("0"):
+            released_line = f"\n💰 Released to sponsor: <b>{fmt_usdt(released)} USDT</b>"
+
+        await _safe_edit(
+            query,
+            f"✅ <b>Campaign #{campaign_id} Deleted</b>\n"
+            f"📝 {summary.get('title', '')}"
+            f"{released_line}",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        log.exception("Admin delete campaign failed", campaign_id=campaign_id)
+        await _safe_edit(
+            query,
+            f"❌ Delete failed: <code>{str(e)[:200]}</code>",
+            parse_mode="HTML",
+        )
