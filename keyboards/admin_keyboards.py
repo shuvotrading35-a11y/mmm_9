@@ -57,7 +57,7 @@ def admin_back_reply_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [
                 KeyboardButton("🔙 Back to Admin Panel", style="primary"),
-                KeyboardButton("🏠 Main Menu"),
+                KeyboardButton("🏠 Main Menu", style="primary"),
             ],
         ],
         resize_keyboard=True,
@@ -77,65 +77,12 @@ def admin_cancel_reply_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def admin_users_filter_reply_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [
-                KeyboardButton("🔍 Search User", style="primary"),
-                KeyboardButton("📋 Recent Users", style="primary"),
-            ],
-            [
-                KeyboardButton("🚫 Banned", style="danger"),
-                KeyboardButton("⚠️ Restricted", style="danger"),
-            ],
-            [KeyboardButton("🔙 Back to Admin Panel")],
-        ],
-        resize_keyboard=True,
-        is_persistent=True,
-    )
-
-
-def admin_campaigns_filter_reply_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [
-                KeyboardButton("⏳ Pending", style="primary"),
-                KeyboardButton("✅ Active", style="success"),
-            ],
-            [
-                KeyboardButton("⏸ Paused", style="primary"),
-                KeyboardButton("❌ Rejected", style="danger"),
-            ],
-            [KeyboardButton("🔙 Back to Admin Panel")],
-        ],
-        resize_keyboard=True,
-        is_persistent=True,
-    )
-
-
-def admin_withdrawals_filter_reply_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [
-                KeyboardButton("⏳ Pending Withdrawals", style="primary"),
-                KeyboardButton("✅ Approved", style="success"),
-            ],
-            [
-                KeyboardButton("❌ Rejected", style="danger"),
-                KeyboardButton("📋 All Withdrawals"),
-            ],
-            [KeyboardButton("🔙 Back to Admin Panel")],
-        ],
-        resize_keyboard=True,
-        is_persistent=True,
-    )
-
-
 # ══════════════════════════════════════════════════════════════════
 # Inline keyboards — per-item actions (need an ID)
 # ══════════════════════════════════════════════════════════════════
 
 def user_action_keyboard(user_id: int, status: str) -> InlineKeyboardMarkup:
+    """Generic user action keyboard (kept for compatibility)."""
     buttons = [
         [InlineKeyboardButton("💰 Adjust Balance", callback_data=f"admin:user_balance:{user_id}")],
     ]
@@ -146,6 +93,19 @@ def user_action_keyboard(user_id: int, status: str) -> InlineKeyboardMarkup:
     if status == "RESTRICTED":
         buttons.append([InlineKeyboardButton("✅ Unrestrict", callback_data=f"admin:unrestrict:{user_id}")])
     buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin:users")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def user_detail_keyboard(user_id: int, status: str) -> InlineKeyboardMarkup:
+    """Actions for a single user — shown from user detail view."""
+    buttons = [
+        [InlineKeyboardButton("💰 Adjust Balance", callback_data=f"admin:user_balance:{user_id}")],
+    ]
+    if status != "BANNED":
+        buttons.append([InlineKeyboardButton("🚫 Ban User", callback_data=f"admin:ban:{user_id}")])
+    else:
+        buttons.append([InlineKeyboardButton("✅ Unban User", callback_data=f"admin:unban:{user_id}")])
+    buttons.append([InlineKeyboardButton("🔙 Back to Users", callback_data="admin:users")])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -176,18 +136,27 @@ def withdrawal_action_keyboard(withdrawal_id: int) -> InlineKeyboardMarkup:
 
 def sponsor_action_keyboard(sponsor_id: int, status: str) -> InlineKeyboardMarkup:
     buttons = []
+
+    # Add Balance is always available
+    buttons.append([InlineKeyboardButton(
+        "💰 Add Balance",
+        callback_data=f"admin:sponsor_add_balance:{sponsor_id}",
+    )])
+
     if status == "PENDING":
         buttons.append([
             InlineKeyboardButton("✅ Approve", callback_data=f"admin:sponsor_approve:{sponsor_id}"),
             InlineKeyboardButton("❌ Reject", callback_data=f"admin:sponsor_reject:{sponsor_id}"),
         ])
     if status == "APPROVED":
-        buttons.append([InlineKeyboardButton("🚫 Suspend", callback_data=f"admin:sponsor_suspend:{sponsor_id}")])
-    # Balance add is available for any non-banned sponsor
-    if status in ("APPROVED", "PENDING", "SUSPENDED"):
-        buttons.append([InlineKeyboardButton("💳 Add Balance", callback_data=f"admin:sponsor_add_balance:{sponsor_id}")])
+        buttons.append([InlineKeyboardButton(
+            "🚫 Suspend", callback_data=f"admin:sponsor_suspend:{sponsor_id}"
+        )])
+
     buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin:sponsors")])
     return InlineKeyboardMarkup(buttons)
+
+
 def deposit_action_keyboard(deposit_id: int, status: str) -> InlineKeyboardMarkup:
     """Action buttons for a specific deposit."""
     buttons = []
