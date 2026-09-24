@@ -96,29 +96,27 @@ def sponsor_back_reply_keyboard() -> ReplyKeyboardMarkup:
 
 
 # ══════════════════════════════════════════════════════════════════
-# Inline keyboards — per-campaign actions (need campaign_id)
-# (style parameter doesn't apply to InlineKeyboardButton)
+# Inline keyboards — per-campaign actions
 # ══════════════════════════════════════════════════════════════════
 
 def campaign_actions_keyboard(campaign_id: int, status: str) -> InlineKeyboardMarkup:
     """Action buttons for a specific campaign."""
     buttons = []
+    s = (status or "").upper()
 
-    status_upper = (status or "").upper()
-
-    if status_upper == "PENDING_FUNDING":
+    if s == "PENDING_FUNDING":
         buttons.append([InlineKeyboardButton(
             "💰 Fund Campaign",
             callback_data=f"sponsor:fund:{campaign_id}"
         )])
 
-    if status_upper == "ACTIVE":
+    if s == "ACTIVE":
         buttons.append([InlineKeyboardButton(
             "⏸ Pause",
             callback_data=f"sponsor:pause:{campaign_id}"
         )])
 
-    if status_upper == "PAUSED":
+    if s == "PAUSED":
         buttons.append([InlineKeyboardButton(
             "▶️ Resume",
             callback_data=f"sponsor:resume:{campaign_id}"
@@ -129,12 +127,35 @@ def campaign_actions_keyboard(campaign_id: int, status: str) -> InlineKeyboardMa
         callback_data=f"sponsor:analytics:{campaign_id}"
     )])
 
+    # Delete button — not available for completed campaigns
+    if s != "COMPLETED":
+        buttons.append([InlineKeyboardButton(
+            "🗑 Delete Campaign",
+            callback_data=f"sponsor:delete_prompt:{campaign_id}"
+        )])
+
     buttons.append([InlineKeyboardButton(
         "🔙 Back",
         callback_data="sponsor:campaigns"
     )])
 
     return InlineKeyboardMarkup(buttons)
+
+
+def campaign_delete_confirm_keyboard(campaign_id: int) -> InlineKeyboardMarkup:
+    """Confirmation keyboard before deleting a campaign."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "✅ Yes, Delete",
+                callback_data=f"sponsor:delete_confirm:{campaign_id}",
+            ),
+            InlineKeyboardButton(
+                "❌ Cancel",
+                callback_data=f"sponsor:campaign_detail:{campaign_id}",
+            ),
+        ],
+    ])
 
 
 def deposit_submitted_keyboard() -> InlineKeyboardMarkup:
@@ -161,17 +182,3 @@ def task_type_keyboard() -> ReplyKeyboardMarkup:
 def duration_keyboard() -> ReplyKeyboardMarkup:
     """Alias — old name kept for compatibility."""
     return sponsor_duration_reply_keyboard()
-def campaign_delete_confirm_keyboard(campaign_id: int) -> InlineKeyboardMarkup:
-    """Confirmation keyboard before deleting a campaign."""
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "✅ Yes, Delete",
-                callback_data=f"sponsor:delete_confirm:{campaign_id}",
-            ),
-            InlineKeyboardButton(
-                "❌ Cancel",
-                callback_data=f"sponsor:campaign_detail:{campaign_id}",
-            ),
-        ],
-    ])
