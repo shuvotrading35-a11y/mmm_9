@@ -188,3 +188,16 @@ def sponsor_action_keyboard(sponsor_id: int, status: str) -> InlineKeyboardMarku
         buttons.append([InlineKeyboardButton("💳 Add Balance", callback_data=f"admin:sponsor_add_balance:{sponsor_id}")])
     buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin:sponsors")])
     return InlineKeyboardMarkup(buttons)
+def deposit_action_keyboard(deposit_id: int, status: str) -> InlineKeyboardMarkup:
+    """Action buttons for a specific deposit."""
+    buttons = []
+
+    if status == "PENDING":
+        buttons.append([
+            InlineKeyboardButton("✅ Approve", callback_data=f"admin:deposit_approve:{deposit_id}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"admin:deposit_reject:{deposit_id}"),
+        ])
+
+    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin:deposits")])
+
+    return InlineKeyboardMarkup(buttons)
