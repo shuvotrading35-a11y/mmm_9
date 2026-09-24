@@ -116,24 +116,12 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("admin", admin_panel_handler))
     app.add_handler(CommandHandler("sponsor", sponsor_panel_handler))
 
-    # 3. ADMIN reply keyboard — emoji stripped, end-anchored
-    app.add_handler(MessageHandler(filters.Regex(r"Users$"), admin_users_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"Campaigns$"), admin_campaigns_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"Sponsors$"), admin_sponsors_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"Deposits$"), admin_deposits_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"Withdrawals$"), admin_withdrawals_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"Referrals$"), admin_referrals_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"Admin Stats$"), admin_stats_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"Broadcast$"), admin_broadcast_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"Banned Users$"), admin_banned_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"Settings$"), admin_settings_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"Fraud Monitor$"), admin_fraud_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"Audit Logs$"), admin_audit_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"Back to Admin Panel$"), admin_back_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"Close Admin Panel$"), admin_close_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"Cancel Admin$"), admin_cancel_reply))
-
-    # 4. SPONSOR reply keyboard — emoji stripped, end-anchored
+    # ══════════════════════════════════════════════════════════
+    # 3. SPONSOR reply keyboard — FIRST (must be before admin)
+    #    Why: "My Campaigns" ends with "Campaigns", so admin's
+    #    "Campaigns$" regex would otherwise shadow it and block
+    #    the sponsor handler (silent no-op for non-admins).
+    # ══════════════════════════════════════════════════════════
     app.add_handler(MessageHandler(filters.Regex(r"Sponsor Panel$"), sponsor_panel_reply_handler))
     app.add_handler(MessageHandler(filters.Regex(r"Create Campaign$"), sponsor_create_campaign_reply))
     app.add_handler(MessageHandler(filters.Regex(r"My Campaigns$"), sponsor_my_campaigns_reply))
@@ -152,7 +140,31 @@ def build_application() -> Application:
     ))
     app.add_handler(MessageHandler(filters.Regex(r"Cancel Sponsor$"), sponsor_cancel_reply))
 
-    # 5. Main menu reply buttons — emoji stripped, end-anchored
+    # ══════════════════════════════════════════════════════════
+    # 4. ADMIN reply keyboard — AFTER sponsor
+    #    Admin handlers internally check authorization and
+    #    silently return for non-admins. Since sponsor matched
+    #    first, "My Campaigns" never reaches here.
+    # ══════════════════════════════════════════════════════════
+    app.add_handler(MessageHandler(filters.Regex(r"Users$"), admin_users_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"Campaigns$"), admin_campaigns_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"Sponsors$"), admin_sponsors_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"Deposits$"), admin_deposits_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"Withdrawals$"), admin_withdrawals_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"Referrals$"), admin_referrals_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"Admin Stats$"), admin_stats_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"Broadcast$"), admin_broadcast_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"Banned Users$"), admin_banned_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"Settings$"), admin_settings_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"Fraud Monitor$"), admin_fraud_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"Audit Logs$"), admin_audit_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"Back to Admin Panel$"), admin_back_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"Close Admin Panel$"), admin_close_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"Cancel Admin$"), admin_cancel_reply))
+
+    # ══════════════════════════════════════════════════════════
+    # 5. Main menu reply buttons
+    # ══════════════════════════════════════════════════════════
     app.add_handler(MessageHandler(filters.Regex(r"Profile$"), handle_profile))
     app.add_handler(MessageHandler(filters.Regex(r"Live Payments$"), handle_live_payments))
     app.add_handler(MessageHandler(filters.Regex(r"View Tasks$"), handle_tasks))
@@ -168,8 +180,6 @@ def build_application() -> Application:
 
     # ══════════════════════════════════════════════════════════
     # GROUP 10 — Admin free-text input dispatcher
-    # (sponsor balance add, user search, user balance, broadcast)
-    # এটা group 0-এর পরে চলে, তাই নির্দিষ্ট regex আগে ম্যাচ করে
     # ══════════════════════════════════════════════════════════
     app.add_handler(
         MessageHandler(
