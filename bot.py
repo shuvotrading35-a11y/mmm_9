@@ -34,6 +34,7 @@ from admin.panel import (
     admin_stats_reply, admin_broadcast_reply, admin_banned_reply,
     admin_settings_reply, admin_fraud_reply, admin_audit_reply,
     admin_back_reply, admin_close_reply, admin_cancel_reply,
+    admin_sponsor_balance_input_reply,
 )
 from sponsor.panel import (
     sponsor_panel_handler, sponsor_callback_handler,
@@ -135,6 +136,13 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.Regex(r"^🔙 Back to Admin Panel$"), admin_back_reply))
     app.add_handler(MessageHandler(filters.Regex(r"^🔙 Close Admin Panel$"), admin_close_reply))
     app.add_handler(MessageHandler(filters.Regex(r"^❌ Cancel Admin$"), admin_cancel_reply))
+
+    # Admin free-text input states (sponsor balance add, etc.)
+    # Registered BEFORE sponsor catch-all so admin text doesn't fall through
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        admin_sponsor_balance_input_reply,
+    ))
 
     # ══════════════════════════════════════════════════════════
     # 4. SPONSOR reply keyboard
