@@ -744,3 +744,85 @@ async def sponsor_text_input_handler(update: Update, context: ContextTypes.DEFAU
             reply_markup=sponsor_main_reply_keyboard(),
         )
         return
+
+# ══════════════════════════════════════════════════════════════════
+# Campaign delete flow
+# ══════════════════════════════════════════════════════════════════
+
+async def _sponsor_delete_prompt(query, campaign_id: int, sponsor_id: int) -> None:
+    """Ask for confirmation before deleting."""
+    from keyboards.sponsor_keyboards import campaign_delete_confirm_keyboard
+
+    async with get_session() as session:
+        from models.campaign import Campaign
+
+        campaign = await session.get(Campaign, campaign_id)
+        if not campaign:
+            await query.edit_message_text("❌ Campaign not found.")
+            return
+        if campaign.sponsor_id != sponsor_id:
+            await query.edit_message_text("❌ Not your campaign.")
+            return
+
+        title = campaign.title
+        status_str = _status_str(campaign.status)
+        reserved = campaign.reserved_budget or Decimal("0")
+
+    # Build warning text
+    warning = ""
+    if status_str in ("ACTIVE", "PAUSED") and reserved > Decimal("0"):
+        warning = (
+            f"\n⚠️ <b>Warning:</b> This campaign has "
+            f"<b>{fmt_usdt(reserved)} USDT</b> reserved budget.\n"
+            f"It will be <b>refunded to your balance</b>.\n"
+        )
+
+    await query.edit_message_text(
+        f"🗑 <b>DELETE CAMPAIGN #{campaign_id}?</b>\n\n"
+        f"📝 Title: <b>{title}</b>\n"
+        f"📌 Status: <b>{status_str}</b>\n"
+        f"{warning}\n"
+        f"⚠️ This cannot be undone.\n\n"
+        f"Are you sure?",
+        parse_mode="HTML",
+        reply_markup=campaign_delete_confirm_keyboard(campaign_id),
+    )
+
+
+async def _sponsor_delete_confirm(query, campaign_id: int, sponsor_id: int) -> None:
+    """Actually delete the campaign."""
+    from services.campaign_service import CampaignService, CampaignValidationError
+
+    try:
+        async with get_session() as session:
+            async with session.begin():
+                summary = await CampaignService.delete_campaign(
+                    session=session,
+                    campaign_id=campaign_id,
+                    actor_id=sponsor_id,
+                    actor_is_admin=False,
+                )
+
+        released = summary.get("released", Decimal("0"))
+        released_line = ""
+        if released and released > Decimal("0"):
+            released_line = f"\n💰 Refunded: <b>{fmt_usdt(released)} USDT</b>"
+
+        await query.edit_message_text(
+            f"✅ <b>Campaign Deleted</b>\n\n"
+            f"📌 ID: #{summary['id']}\n"
+            f"📝 Title: {summary['title']}"
+            f"{released_line}",
+            parse_mode="HTML",
+        )
+    except CampaignValidationError as e:
+        await query.edit_message_text(f"❌ {e}")
+    except BadRequest as e:
+        if "not modified" not in str(e).lower():
+            raise
+    except Exception as e:
+        log.exception("Delete campaign failed", campaign_id=campaign_id)
+        await query.edit_message_text(
+            f"❌ Delete failed: <code>{str(e)[:200]}</code>",
+            parse_mode="HTML",
+        )
