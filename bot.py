@@ -34,7 +34,7 @@ from admin.panel import (
     admin_stats_reply, admin_broadcast_reply, admin_banned_reply,
     admin_settings_reply, admin_fraud_reply, admin_audit_reply,
     admin_back_reply, admin_close_reply, admin_cancel_reply,
-    admin_sponsor_balance_input_reply,
+    admin_text_input_dispatcher,
 )
 from sponsor.panel import (
     sponsor_panel_handler, sponsor_callback_handler,
@@ -167,13 +167,14 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.Regex(r"^Cancel$"), handle_user_cancel))
 
     # ══════════════════════════════════════════════════════════
-    # GROUP 10 — Admin text input (sponsor balance add)
-    # এটা group 0-এর পরে চলে, তাই নির্দিষ্ট ম্যাচ আগে হয়
+    # GROUP 10 — Admin free-text input dispatcher
+    # (sponsor balance add, user search, user balance, broadcast)
+    # এটা group 0-এর পরে চলে, তাই নির্দিষ্ট regex আগে ম্যাচ করে
     # ══════════════════════════════════════════════════════════
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            admin_sponsor_balance_input_reply,
+            admin_text_input_dispatcher,
         ),
         group=10,
     )
