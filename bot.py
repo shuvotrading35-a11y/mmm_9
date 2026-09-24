@@ -43,6 +43,7 @@ from sponsor.panel import (
     sponsor_support_reply, sponsor_back_reply,
     sponsor_task_type_reply, sponsor_duration_reply,
     sponsor_cancel_reply,
+    sponsor_text_input_handler,
 )
 
 log = structlog.get_logger(__name__)
@@ -94,12 +95,16 @@ def build_application() -> Application:
 
     app = builder.build()
 
-    # Conversation handlers
+    # ══════════════════════════════════════════════════════════
+    # 1. Conversation handlers (must be first)
+    # ══════════════════════════════════════════════════════════
     app.add_handler(profile_conv_handler())
     app.add_handler(withdraw_conv_handler())
     app.add_handler(support_conv_handler())
 
-    # Command handlers
+    # ══════════════════════════════════════════════════════════
+    # 2. Command handlers
+    # ══════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("profile", handle_profile))
@@ -110,30 +115,18 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("admin", admin_panel_handler))
     app.add_handler(CommandHandler("sponsor", sponsor_panel_handler))
 
-    # ── SPONSOR Reply Keyboard handlers ──
-    app.add_handler(MessageHandler(filters.Regex(r"^💼 Sponsor Panel$"), sponsor_panel_reply_handler))
-    app.add_handler(MessageHandler(filters.Regex(r"^➕ Create Campaign$"), sponsor_create_campaign_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"^📋 My Campaigns$"), sponsor_my_campaigns_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"^💰 Deposit USDT$"), sponsor_deposit_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"^📊 Analytics$"), sponsor_analytics_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"^💼 Wallet Info$"), sponsor_wallet_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"^🆘 Support$"), sponsor_support_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"^🔙 Back to Sponsor Panel$"), sponsor_back_reply))
-    app.add_handler(MessageHandler(
-        filters.Regex(r"^📢 Channel Join$|^👥 Group Join$|^🤖 Bot Start$|^📢👥 Channel \+ Group$"),
-        sponsor_task_type_reply
-    ))
-    app.add_handler(MessageHandler(filters.Regex(r"^1 Day$|^3 Days$|^7 Days$|^30 Days$"), sponsor_duration_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"^❌ Cancel Sponsor$"), sponsor_cancel_reply))
-
-    # ── ADMIN Reply Keyboard handlers ──
+    # ══════════════════════════════════════════════════════════
+    # 3. ADMIN reply keyboard (register BEFORE user — so "📊 Statistics"
+    #    routes to admin when admin clicks; non-admin silently dropped)
+    #    Also BEFORE user "🆘 Support" — different text handled below.
+    # ══════════════════════════════════════════════════════════
     app.add_handler(MessageHandler(filters.Regex(r"^👥 Users$"), admin_users_reply))
     app.add_handler(MessageHandler(filters.Regex(r"^📋 Campaigns$"), admin_campaigns_reply))
     app.add_handler(MessageHandler(filters.Regex(r"^💼 Sponsors$"), admin_sponsors_reply))
     app.add_handler(MessageHandler(filters.Regex(r"^💰 Deposits$"), admin_deposits_reply))
     app.add_handler(MessageHandler(filters.Regex(r"^💳 Withdrawals$"), admin_withdrawals_reply))
     app.add_handler(MessageHandler(filters.Regex(r"^🎁 Referrals$"), admin_referrals_reply))
-    app.add_handler(MessageHandler(filters.Regex(r"^📊 Statistics$"), admin_stats_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^📊 Admin Stats$"), admin_stats_reply))
     app.add_handler(MessageHandler(filters.Regex(r"^📢 Broadcast$"), admin_broadcast_reply))
     app.add_handler(MessageHandler(filters.Regex(r"^🚫 Banned Users$"), admin_banned_reply))
     app.add_handler(MessageHandler(filters.Regex(r"^⚙️ Settings$"), admin_settings_reply))
@@ -143,22 +136,55 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.Regex(r"^🔙 Close Admin Panel$"), admin_close_reply))
     app.add_handler(MessageHandler(filters.Regex(r"^❌ Cancel Admin$"), admin_cancel_reply))
 
-    # ── Main menu reply buttons ──
+    # ══════════════════════════════════════════════════════════
+    # 4. SPONSOR reply keyboard
+    # ══════════════════════════════════════════════════════════
+    app.add_handler(MessageHandler(filters.Regex(r"^💼 Sponsor Panel$"), sponsor_panel_reply_handler))
+    app.add_handler(MessageHandler(filters.Regex(r"^➕ Create Campaign$"), sponsor_create_campaign_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^📋 My Campaigns$"), sponsor_my_campaigns_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^💰 Deposit USDT$"), sponsor_deposit_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^📊 Analytics$"), sponsor_analytics_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^💼 Wallet Info$"), sponsor_wallet_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^🆘 Sponsor Support$"), sponsor_support_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^🔙 Back to Sponsor Panel$"), sponsor_back_reply))
+    app.add_handler(MessageHandler(
+        filters.Regex(r"^📢 Channel Join$|^👥 Group Join$|^🤖 Bot Start$|^📢👥 Channel \+ Group$"),
+        sponsor_task_type_reply
+    ))
+    app.add_handler(MessageHandler(filters.Regex(r"^1 Day$|^3 Days$|^7 Days$|^30 Days$"), sponsor_duration_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"^❌ Cancel Sponsor$"), sponsor_cancel_reply))
+
+    # ══════════════════════════════════════════════════════════
+    # 5. Main menu reply buttons
+    # ══════════════════════════════════════════════════════════
     app.add_handler(MessageHandler(filters.Regex(r"^👤 Profile$"), handle_profile))
     app.add_handler(MessageHandler(filters.Regex(r"^💰 Live Payments$"), handle_live_payments))
     app.add_handler(MessageHandler(filters.Regex(r"^📋 View Tasks$"), handle_tasks))
     app.add_handler(MessageHandler(filters.Regex(r"^🎁 Referral$"), handle_referral))
     app.add_handler(MessageHandler(filters.Regex(r"^💳 Withdraw$"), handle_withdraw_menu))
-    app.add_handler(MessageHandler(filters.Regex(r"^📊 Statistics$"), handle_statistics))
+    app.add_handler(MessageHandler(filters.Regex(r"^📊 Stats$"), handle_statistics))
     app.add_handler(MessageHandler(filters.Regex(r"^📣 Promotion$"), handle_promotion))
     app.add_handler(MessageHandler(filters.Regex(r"^🆘 Support$"), handle_support_menu))
-    app.add_handler(MessageHandler(filters.Regex(r"^💼 Sponsor Panel$"), sponsor_panel_handler))
+    # Note: "💼 Sponsor Panel" already registered above (sponsor section)
 
-    # ── Navigation buttons ──
+    # ══════════════════════════════════════════════════════════
+    # 6. Navigation buttons
+    # ══════════════════════════════════════════════════════════
     app.add_handler(MessageHandler(filters.Regex(r"^🏠 Main Menu$"), handle_main_menu))
     app.add_handler(MessageHandler(filters.Regex(r"^❌ Cancel$"), handle_user_cancel))
 
-    # ── Callback handlers (Inline) ──
+    # ══════════════════════════════════════════════════════════
+    # 7. Sponsor wizard text input — MUST BE THE LAST MessageHandler
+    #    (catch-all for free-text input during campaign/deposit flows)
+    # ══════════════════════════════════════════════════════════
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        sponsor_text_input_handler,
+    ))
+
+    # ══════════════════════════════════════════════════════════
+    # 8. Callback handlers (Inline keyboards)
+    # ══════════════════════════════════════════════════════════
     app.add_handler(CallbackQueryHandler(handle_task_done, pattern=r"^task_done:\d+$"))
     app.add_handler(CallbackQueryHandler(handle_task_skip, pattern=r"^task_skip:\d+$"))
     app.add_handler(CallbackQueryHandler(handle_task_next, pattern=r"^task_next$"))
