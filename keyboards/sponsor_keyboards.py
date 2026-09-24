@@ -161,3 +161,17 @@ def task_type_keyboard() -> ReplyKeyboardMarkup:
 def duration_keyboard() -> ReplyKeyboardMarkup:
     """Alias — old name kept for compatibility."""
     return sponsor_duration_reply_keyboard()
+def campaign_delete_confirm_keyboard(campaign_id: int) -> InlineKeyboardMarkup:
+    """Confirmation keyboard before deleting a campaign."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "✅ Yes, Delete",
+                callback_data=f"sponsor:delete_confirm:{campaign_id}",
+            ),
+            InlineKeyboardButton(
+                "❌ Cancel",
+                callback_data=f"sponsor:campaign_detail:{campaign_id}",
+            ),
+        ],
+    ])
