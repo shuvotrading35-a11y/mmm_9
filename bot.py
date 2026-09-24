@@ -8,8 +8,8 @@ from telegram import Update
 from telegram.ext import (
     Application, ApplicationBuilder, CommandHandler,
     MessageHandler, CallbackQueryHandler, filters,
+    ContextTypes,
 )
-
 from config import settings
 from database import init_db, close_db
 
