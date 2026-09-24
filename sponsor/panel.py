@@ -470,3 +470,113 @@ async def _sponsor_campaign_analytics(query, campaign_id: int) -> None:
         parse_mode="HTML",
         reply_markup=campaign_actions_keyboard(campaign_id, data['status']),
     )
+# ══════════════════════════════════════════════════════════════════
+# Text input handler — for wizard steps (username, tx hash, etc.)
+# ══════════════════════════════════════════════════════════════════
+
+async def sponsor_text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Catch text input during sponsor flows."""
+    step = context.user_data.get("sponsor_step")
+    if not step:
+        return
+
+    text = (update.message.text or "").strip()
+
+    # ── Campaign creation: enter_username ──
+    if step == "enter_username":
+        context.user_data["campaign_username"] = text
+        context.user_data["sponsor_step"] = "enter_title"
+        await update.message.reply_text(
+            "✅ Channel saved.\n\n"
+            "Now send a <b>title</b> for this campaign (e.g. 'Join Our News Channel'):",
+            parse_mode="HTML",
+            reply_markup=sponsor_cancel_reply_keyboard(),
+        )
+        return
+
+    # ── Campaign creation: enter_title ──
+    if step == "enter_title":
+        context.user_data["campaign_title"] = text[:100]
+        context.user_data["sponsor_step"] = "enter_reward"
+        await update.message.reply_text(
+            "✅ Title saved.\n\n"
+            "Now send the <b>reward per task</b> in USDT (e.g. 0.05):",
+            parse_mode="HTML",
+            reply_markup=sponsor_cancel_reply_keyboard(),
+        )
+        return
+
+    # ── Campaign creation: enter_reward ──
+    if step == "enter_reward":
+        try:
+            from decimal import Decimal
+            reward = Decimal(text)
+            if reward <= 0 or reward > Decimal("10"):
+                raise ValueError
+        except Exception:
+            await update.message.reply_text(
+                "❌ Invalid amount. Send a number between 0.001 and 10 (e.g. 0.05)"
+            )
+            return
+        context.user_data["campaign_reward"] = str(reward)
+        context.user_data["sponsor_step"] = "enter_budget"
+        await update.message.reply_text(
+            "✅ Reward saved.\n\n"
+            "Now send the <b>total budget</b> in USDT (e.g. 100):",
+            parse_mode="HTML",
+            reply_markup=sponsor_cancel_reply_keyboard(),
+        )
+        return
+
+    # ── Campaign creation: enter_budget → summary ──
+    if step == "enter_budget":
+        try:
+            from decimal import Decimal
+            budget = Decimal(text)
+            if budget <= 0:
+                raise ValueError
+        except Exception:
+            await update.message.reply_text(
+                "❌ Invalid budget. Send a number like 100"
+            )
+            return
+        context.user_data["campaign_budget"] = str(budget)
+
+        # Summary
+        summary = (
+            f"📋 <b>Campaign Summary</b>\n\n"
+            f"📌 Type: {context.user_data.get('campaign_type')}\n"
+            f"⏱ Duration: {context.user_data.get('campaign_duration')} day(s)\n"
+            f"🔗 Channel: {context.user_data.get('campaign_username')}\n"
+            f"📝 Title: {context.user_data.get('campaign_title')}\n"
+            f"💰 Reward/task: {context.user_data.get('campaign_reward')} USDT\n"
+            f"💵 Total budget: {context.user_data.get('campaign_budget')} USDT\n\n"
+            f"⚠️ Campaign creation is not yet wired to the database.\n"
+            f"Please contact support to complete your campaign."
+        )
+        context.user_data.pop("sponsor_step", None)
+        await update.message.reply_text(
+            summary,
+            parse_mode="HTML",
+            reply_markup=sponsor_main_reply_keyboard(),
+        )
+        return
+
+    # ── Deposit: enter_tx_hash ──
+    if step == "enter_tx_hash":
+        if not text.startswith("0x") or len(text) < 60:
+            await update.message.reply_text(
+                "❌ Invalid transaction hash.\n\n"
+                "It should start with <code>0x</code> and be at least 60 characters.",
+                parse_mode="HTML",
+                reply_markup=sponsor_cancel_reply_keyboard(),
+            )
+            return
+        context.user_data.pop("sponsor_step", None)
+        await update.message.reply_text(
+            f"✅ Transaction hash received:\n<code>{text}</code>\n\n"
+            "Your deposit will be verified shortly. You'll be notified once confirmed.",
+            parse_mode="HTML",
+            reply_markup=sponsor_main_reply_keyboard(),
+        )
+        return
