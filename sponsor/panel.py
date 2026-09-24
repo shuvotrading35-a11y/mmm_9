@@ -8,6 +8,7 @@ from telegram import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from database import get_session
@@ -21,9 +22,29 @@ from keyboards.sponsor_keyboards import (
     deposit_submitted_keyboard,
 )
 from utils.decimal_utils import fmt_usdt
-from datetime import datetime, timedelta, timezone
 
 log = structlog.get_logger(__name__)
+
+
+def _status_str(status) -> str:
+    """Convert enum or str to uppercase string."""
+    if hasattr(status, "value"):
+        return str(status.value).upper()
+    return str(status).upper()
+
+
+def _status_icon(status) -> str:
+    s = _status_str(status)
+    return {
+        "ACTIVE": "🟢",
+        "PAUSED": "⏸",
+        "COMPLETED": "✅",
+        "PENDING": "⏳",
+        "PENDING_FUNDING": "💳",
+        "EXPIRED": "❌",
+        "CANCELLED": "🚫",
+        "DRAFT": "📝",
+    }.get(s, "•")
 
 
 async def _get_sponsor(session, user_id: int):
@@ -69,30 +90,32 @@ async def sponsor_panel_handler(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return
 
+        # session-এর ভিতরে সব values বের করে নেওয়া
         stats = {
             "available": sponsor.available_balance,
             "reserved": sponsor.reserved_balance,
             "spent": sponsor.total_spent,
         }
+        sponsor_id = sponsor.id
 
         from models.campaign import Campaign, CampaignStatus
         from sqlalchemy import select, func as sa_func
 
         active = (await session.execute(
             select(sa_func.count(Campaign.id)).where(
-                Campaign.sponsor_id == sponsor.id,
+                Campaign.sponsor_id == sponsor_id,
                 Campaign.status == CampaignStatus.ACTIVE
             )
         )).scalar()
         paused = (await session.execute(
             select(sa_func.count(Campaign.id)).where(
-                Campaign.sponsor_id == sponsor.id,
+                Campaign.sponsor_id == sponsor_id,
                 Campaign.status == CampaignStatus.PAUSED
             )
         )).scalar()
         completed = (await session.execute(
             select(sa_func.count(Campaign.id)).where(
-                Campaign.sponsor_id == sponsor.id,
+                Campaign.sponsor_id == sponsor_id,
                 Campaign.status == CampaignStatus.COMPLETED
             )
         )).scalar()
@@ -144,11 +167,22 @@ async def sponsor_my_campaigns_reply(update: Update, context: ContextTypes.DEFAU
         if not sponsor:
             await update.message.reply_text("❌ No sponsor account.")
             return
+        sponsor_id = sponsor.id
 
         from services.campaign_service import CampaignService
-        campaigns = await CampaignService.get_sponsor_campaigns(session, sponsor.id)
+        campaigns = await CampaignService.get_sponsor_campaigns(session, sponsor_id)
 
-    if not campaigns:
+        # session-এর ভিতরেই সব ডেটা বের করে নেওয়া
+        rows = [
+            {
+                "id": c.id,
+                "title": c.title,
+                "status": _status_str(c.status),
+            }
+            for c in campaigns[:10]
+        ]
+
+    if not rows:
         await update.message.reply_text(
             "📋 No campaigns yet. Create your first one!",
             reply_markup=sponsor_main_reply_keyboard(),
@@ -156,12 +190,15 @@ async def sponsor_my_campaigns_reply(update: Update, context: ContextTypes.DEFAU
         return
 
     buttons = []
-    for c in campaigns[:10]:
-        status_icon = {"ACTIVE": "🟢", "PAUSED": "⏸", "COMPLETED": "✅",
-                       "PENDING": "⏳", "EXPIRED": "❌"}.get(c.status, "•")
+    for c in rows:
+        icon = {
+            "ACTIVE": "🟢", "PAUSED": "⏸", "COMPLETED": "✅",
+            "PENDING": "⏳", "PENDING_FUNDING": "💳",
+            "EXPIRED": "❌", "CANCELLED": "🚫",
+        }.get(c["status"], "•")
         buttons.append([InlineKeyboardButton(
-            f"{status_icon} #{c.id}: {c.title[:25]}",
-            callback_data=f"sponsor:campaign_detail:{c.id}"
+            f"{icon} #{c['id']}: {c['title'][:25]}",
+            callback_data=f"sponsor:campaign_detail:{c['id']}"
         )])
 
     await update.message.reply_text(
@@ -197,9 +234,10 @@ async def sponsor_analytics_reply(update: Update, context: ContextTypes.DEFAULT_
         if not sponsor:
             await update.message.reply_text("❌ No sponsor account.")
             return
+        sponsor_id = sponsor.id
 
         from services.sponsor_service import SponsorService
-        info = await SponsorService.get_sponsor_wallet_info(session, sponsor.id)
+        info = await SponsorService.get_sponsor_wallet_info(session, sponsor_id)
 
     await update.message.reply_text(
         f"📊 <b>ANALYTICS</b>\n\n"
@@ -220,9 +258,10 @@ async def sponsor_wallet_reply(update: Update, context: ContextTypes.DEFAULT_TYP
         if not sponsor:
             await update.message.reply_text("❌ No sponsor account.")
             return
+        sponsor_id = sponsor.id
 
         from services.sponsor_service import SponsorService
-        info = await SponsorService.get_sponsor_wallet_info(session, sponsor.id)
+        info = await SponsorService.get_sponsor_wallet_info(session, sponsor_id)
 
     await update.message.reply_text(
         f"💼 <b>WALLET INFO</b>\n\n"
@@ -327,38 +366,46 @@ async def sponsor_callback_handler(update: Update, context: ContextTypes.DEFAULT
 
     async with get_session() as session:
         sponsor = await _get_sponsor(session, user.id)
+        sponsor_id = sponsor.id if sponsor else None
 
     if not sponsor:
         await query.edit_message_text("❌ No sponsor account found.")
         return
 
     if action == "campaigns":
-        await _sponsor_list_campaigns(query, sponsor.id)
+        await _sponsor_list_campaigns(query, sponsor_id)
 
     elif action == "campaign_detail" and len(parts) > 2:
         await _sponsor_campaign_analytics(query, int(parts[2]))
 
     elif action == "fund" and len(parts) > 2:
-        await _sponsor_fund_campaign(query, int(parts[2]), sponsor.id)
+        await _sponsor_fund_campaign(query, int(parts[2]), sponsor_id)
 
     elif action == "analytics" and len(parts) > 2:
         await _sponsor_campaign_analytics(query, int(parts[2]))
 
     elif action == "pause" and len(parts) > 2:
-        await _sponsor_pause_campaign(query, int(parts[2]), sponsor.id)
+        await _sponsor_pause_campaign(query, int(parts[2]), sponsor_id)
 
     elif action == "resume" and len(parts) > 2:
-        await _sponsor_resume_campaign(query, int(parts[2]), sponsor.id)
+        await _sponsor_resume_campaign(query, int(parts[2]), sponsor_id)
 
     elif action == "back":
-        await query.edit_message_text(
-            "💼 <b>SPONSOR PANEL</b>",
-            parse_mode="HTML",
-        )
+        try:
+            await query.edit_message_text(
+                "💼 <b>SPONSOR PANEL</b>",
+                parse_mode="HTML",
+            )
+        except BadRequest as e:
+            if "not modified" not in str(e).lower():
+                raise
 
     elif action == "cancel":
         context.user_data.clear()
-        await query.edit_message_text("❌ Cancelled.")
+        try:
+            await query.edit_message_text("❌ Cancelled.")
+        except BadRequest:
+            pass
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -385,64 +432,99 @@ async def _sponsor_list_campaigns(query, sponsor_id: int) -> None:
         from services.campaign_service import CampaignService
         campaigns = await CampaignService.get_sponsor_campaigns(session, sponsor_id)
 
-    if not campaigns:
-        await query.edit_message_text(
-            "📋 No campaigns yet. Create your first one!",
-        )
+        # session-এর ভিতরে সব ডেটা plain dict-এ রূপান্তর
+        rows = [
+            {
+                "id": c.id,
+                "title": c.title,
+                "status": _status_str(c.status),
+            }
+            for c in campaigns[:10]
+        ]
+
+    if not rows:
+        try:
+            await query.edit_message_text(
+                "📋 No campaigns yet. Create your first one!",
+            )
+        except BadRequest as e:
+            if "not modified" not in str(e).lower():
+                raise
         return
 
     buttons = []
-    for c in campaigns[:10]:
-        status_icon = {"ACTIVE": "🟢", "PAUSED": "⏸", "COMPLETED": "✅",
-                       "PENDING": "⏳", "EXPIRED": "❌"}.get(c.status, "•")
+    for c in rows:
+        icon = {
+            "ACTIVE": "🟢", "PAUSED": "⏸", "COMPLETED": "✅",
+            "PENDING": "⏳", "PENDING_FUNDING": "💳",
+            "EXPIRED": "❌", "CANCELLED": "🚫",
+        }.get(c["status"], "•")
         buttons.append([InlineKeyboardButton(
-            f"{status_icon} #{c.id}: {c.title[:25]}",
-            callback_data=f"sponsor:campaign_detail:{c.id}"
+            f"{icon} #{c['id']}: {c['title'][:25]}",
+            callback_data=f"sponsor:campaign_detail:{c['id']}"
         )])
     buttons.append([InlineKeyboardButton("🔙 Back", callback_data="sponsor:back")])
 
-    await query.edit_message_text(
-        "📋 <b>MY CAMPAIGNS</b>",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(buttons),
-    )
+    try:
+        await query.edit_message_text(
+            "📋 <b>MY CAMPAIGNS</b>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+    except BadRequest as e:
+        if "not modified" not in str(e).lower():
+            raise
 
 
 async def _sponsor_fund_campaign(query, campaign_id: int, sponsor_id: int) -> None:
-    async with get_session() as session:
-        async with session.begin():
-            from services.campaign_service import CampaignService, CampaignValidationError
-            try:
-                campaign = await CampaignService.fund_campaign(session, campaign_id, sponsor_id)
-                await query.edit_message_text(
-                    f"✅ Campaign <b>#{campaign_id}</b> funded and now ACTIVE!\n"
-                    f"Budget: <b>{fmt_usdt(campaign.total_budget)} USDT</b>",
-                    parse_mode="HTML",
+    from services.campaign_service import CampaignValidationError
+    try:
+        async with get_session() as session:
+            async with session.begin():
+                from services.campaign_service import CampaignService
+                campaign = await CampaignService.fund_campaign(
+                    session, campaign_id, sponsor_id
                 )
-            except CampaignValidationError as e:
-                await query.edit_message_text(f"❌ {e}")
+                total_budget = campaign.total_budget
+
+        await query.edit_message_text(
+            f"✅ Campaign <b>#{campaign_id}</b> funded and now ACTIVE!\n"
+            f"Budget: <b>{fmt_usdt(total_budget)} USDT</b>",
+            parse_mode="HTML",
+        )
+    except CampaignValidationError as e:
+        await query.edit_message_text(f"❌ {e}")
+    except BadRequest as e:
+        if "not modified" not in str(e).lower():
+            raise
 
 
 async def _sponsor_pause_campaign(query, campaign_id: int, sponsor_id: int) -> None:
-    async with get_session() as session:
-        async with session.begin():
-            from services.campaign_service import CampaignService
-            try:
+    try:
+        async with get_session() as session:
+            async with session.begin():
+                from services.campaign_service import CampaignService
                 await CampaignService.pause_campaign(session, campaign_id, sponsor_id)
-                await query.edit_message_text(f"⏸ Campaign #{campaign_id} paused.")
-            except Exception as e:
-                await query.edit_message_text(f"❌ {e}")
+        await query.edit_message_text(f"⏸ Campaign #{campaign_id} paused.")
+    except Exception as e:
+        try:
+            await query.edit_message_text(f"❌ {e}")
+        except BadRequest:
+            pass
 
 
 async def _sponsor_resume_campaign(query, campaign_id: int, sponsor_id: int) -> None:
-    async with get_session() as session:
-        async with session.begin():
-            from services.campaign_service import CampaignService
-            try:
-                await CampaignService.resume_campaign(session, campaign_id, sponsor_id)
-                await query.edit_message_text(f"▶️ Campaign #{campaign_id} resumed.")
-            except Exception as e:
-                await query.edit_message_text(f"❌ {e}")
+    try:
+        async with get_session() as session:
+            async with session.begin():
+                from services.campaign_service import CampaignService
+                await CampaignService.resume_campaign(session, campaign_id)
+        await query.edit_message_text(f"▶️ Campaign #{campaign_id} resumed.")
+    except Exception as e:
+        try:
+            await query.edit_message_text(f"❌ {e}")
+        except BadRequest:
+            pass
 
 
 async def _sponsor_campaign_analytics(query, campaign_id: int) -> None:
@@ -454,7 +536,7 @@ async def _sponsor_campaign_analytics(query, campaign_id: int) -> None:
         await query.edit_message_text("❌ Campaign not found.")
         return
 
-    await query.edit_message_text(
+    text = (
         f"📊 <b>CAMPAIGN ANALYTICS — #{data['id']}</b>\n\n"
         f"Title: {data['title']}\n\n"
         f"━━━━━━ PERFORMANCE ━━━━━━\n"
@@ -467,12 +549,27 @@ async def _sponsor_campaign_analytics(query, campaign_id: int) -> None:
         f"━━━━━━ BUDGET ━━━━━━\n"
         f"💰 Total:     <b>{fmt_usdt(data['total_budget'])} USDT</b>\n"
         f"💸 Spent:     <b>{fmt_usdt(data['spent_budget'])} USDT</b>\n"
-        f"💰 Remaining: <b>{fmt_usdt(data['remaining_budget'])} USDT</b>",
-        parse_mode="HTML",
-        reply_markup=campaign_actions_keyboard(campaign_id, data['status']),
+        f"💰 Remaining: <b>{fmt_usdt(data['remaining_budget'])} USDT</b>"
     )
+
+    try:
+        await query.edit_message_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=campaign_actions_keyboard(campaign_id, data['status']),
+        )
+    except BadRequest as e:
+        if "not modified" in str(e).lower():
+            try:
+                await query.answer("ℹ️ Already up to date")
+            except Exception:
+                pass
+        else:
+            raise
+
+
 # ══════════════════════════════════════════════════════════════════
-# Text input handler — for wizard steps (username, tx hash, etc.)
+# Text input handler — for wizard steps
 # ══════════════════════════════════════════════════════════════════
 
 async def sponsor_text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -509,7 +606,6 @@ async def sponsor_text_input_handler(update: Update, context: ContextTypes.DEFAU
 
     # ── Campaign creation: enter_reward ──
     if step == "enter_reward":
-        from decimal import Decimal
         try:
             reward = Decimal(text)
             if reward <= 0 or reward > Decimal("10"):
@@ -531,7 +627,6 @@ async def sponsor_text_input_handler(update: Update, context: ContextTypes.DEFAU
 
     # ── Campaign creation: enter_budget → create in DB ──
     if step == "enter_budget":
-        from decimal import Decimal
         from datetime import datetime, timedelta, timezone
 
         try:
@@ -573,6 +668,7 @@ async def sponsor_text_input_handler(update: Update, context: ContextTypes.DEFAU
                     if not sponsor:
                         await update.message.reply_text("❌ No sponsor account found.")
                         return
+                    sponsor_id = sponsor.id
 
                     try:
                         task_type = TaskType(task_type_str)
@@ -582,7 +678,7 @@ async def sponsor_text_input_handler(update: Update, context: ContextTypes.DEFAU
                     expires_at = datetime.now(tz=timezone.utc) + timedelta(days=duration)
 
                     campaign = Campaign(
-                        sponsor_id=sponsor.id,
+                        sponsor_id=sponsor_id,
                         title=title[:256],
                         description=None,
                         task_type=task_type,
