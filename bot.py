@@ -97,7 +97,7 @@ def build_application() -> Application:
     app = builder.build()
 
     # ══════════════════════════════════════════════════════════
-    # GROUP 0 — সব নির্দিষ্ট ম্যাচ
+    # GROUP 0 — সব হ্যান্ডলার এই একই group-এ, ক্রম গুরুত্বপূর্ণ
     # ══════════════════════════════════════════════════════════
 
     # 1. Conversation handlers (must be first)
@@ -116,12 +116,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("admin", admin_panel_handler))
     app.add_handler(CommandHandler("sponsor", sponsor_panel_handler))
 
-    # ══════════════════════════════════════════════════════════
     # 3. SPONSOR reply keyboard — FIRST (must be before admin)
-    #    Why: "My Campaigns" ends with "Campaigns", so admin's
-    #    "Campaigns$" regex would otherwise shadow it and block
-    #    the sponsor handler (silent no-op for non-admins).
-    # ══════════════════════════════════════════════════════════
     app.add_handler(MessageHandler(filters.Regex(r"Sponsor Panel$"), sponsor_panel_reply_handler))
     app.add_handler(MessageHandler(filters.Regex(r"Create Campaign$"), sponsor_create_campaign_reply))
     app.add_handler(MessageHandler(filters.Regex(r"My Campaigns$"), sponsor_my_campaigns_reply))
@@ -140,12 +135,7 @@ def build_application() -> Application:
     ))
     app.add_handler(MessageHandler(filters.Regex(r"Cancel Sponsor$"), sponsor_cancel_reply))
 
-    # ══════════════════════════════════════════════════════════
     # 4. ADMIN reply keyboard — AFTER sponsor
-    #    Admin handlers internally check authorization and
-    #    silently return for non-admins. Since sponsor matched
-    #    first, "My Campaigns" never reaches here.
-    # ══════════════════════════════════════════════════════════
     app.add_handler(MessageHandler(filters.Regex(r"Users$"), admin_users_reply))
     app.add_handler(MessageHandler(filters.Regex(r"Campaigns$"), admin_campaigns_reply))
     app.add_handler(MessageHandler(filters.Regex(r"Sponsors$"), admin_sponsors_reply))
@@ -162,9 +152,7 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.Regex(r"Close Admin Panel$"), admin_close_reply))
     app.add_handler(MessageHandler(filters.Regex(r"Cancel Admin$"), admin_cancel_reply))
 
-    # ══════════════════════════════════════════════════════════
     # 5. Main menu reply buttons
-    # ══════════════════════════════════════════════════════════
     app.add_handler(MessageHandler(filters.Regex(r"Profile$"), handle_profile))
     app.add_handler(MessageHandler(filters.Regex(r"Live Payments$"), handle_live_payments))
     app.add_handler(MessageHandler(filters.Regex(r"View Tasks$"), handle_tasks))
@@ -179,26 +167,52 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.Regex(r"^Cancel$"), handle_user_cancel))
 
     # ══════════════════════════════════════════════════════════
-    # GROUP 10 — Admin free-text input dispatcher
+    # 7. COMBINED free-text dispatcher — MUST be last in group 0
+    #    Because PTB runs the FIRST matching handler in a group
+    #    and skips the rest, this will only run when NO button
+    #    regex matched — i.e. user actually typed free text.
     # ══════════════════════════════════════════════════════════
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            admin_text_input_dispatcher,
-        ),
-        group=10,
-    )
+    async def _combined_text_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update.message or not update.message.text:
+            return
+        text = update.message.text
 
-    # ══════════════════════════════════════════════════════════
-    # GROUP 11 — Sponsor wizard text input (catch-all, runs LAST)
-    # ══════════════════════════════════════════════════════════
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            sponsor_text_input_handler,
-        ),
-        group=11,
-    )
+        # /cancel shortcut
+        if text.lower() in ("/cancel", "cancel"):
+            has_state = any(
+                context.user_data.get(k) for k in (
+                    "admin_awaiting_sponsor_balance",
+                    "admin_awaiting_user_balance",
+                    "admin_awaiting_user_search",
+                    "admin_awaiting_broadcast",
+                    "sponsor_step",
+                )
+            )
+            if has_state:
+                context.user_data.clear()
+                await update.message.reply_text("❌ Cancelled.")
+                return
+
+        # Admin states take priority
+        if settings.is_admin(update.effective_user.id):
+            if any([
+                context.user_data.get("admin_awaiting_sponsor_balance"),
+                context.user_data.get("admin_awaiting_user_balance"),
+                context.user_data.get("admin_awaiting_user_search"),
+                context.user_data.get("admin_awaiting_broadcast"),
+            ]):
+                await admin_text_input_dispatcher(update, context)
+                return
+
+        # Sponsor wizard states
+        if context.user_data.get("sponsor_step"):
+            await sponsor_text_input_handler(update, context)
+            return
+
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        _combined_text_dispatcher,
+    ))
 
     # ══════════════════════════════════════════════════════════
     # Callback handlers (Inline keyboards)
