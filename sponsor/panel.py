@@ -378,6 +378,12 @@ async def sponsor_callback_handler(update: Update, context: ContextTypes.DEFAULT
     elif action == "campaign_detail" and len(parts) > 2:
         await _sponsor_campaign_analytics(query, int(parts[2]))
 
+    elif action == "delete_prompt" and len(parts) > 2:
+        await _sponsor_delete_prompt(query, int(parts[2]), sponsor_id)
+
+    elif action == "delete_confirm" and len(parts) > 2:
+        await _sponsor_delete_confirm(query, int(parts[2]), sponsor_id)
+
     elif action == "fund" and len(parts) > 2:
         await _sponsor_fund_campaign(query, int(parts[2]), sponsor_id)
 
