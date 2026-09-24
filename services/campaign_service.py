@@ -356,7 +356,7 @@ class CampaignService:
         # Sponsors can only delete their own campaigns
         if not actor_is_admin:
             sponsor = await session.get(Sponsor, campaign.sponsor_id)
-            if not sponsor or sponsor.user_id != actor_id:
+            if not sponsor or sponsor.id != actor_id:
                 raise CampaignValidationError("Not your campaign")
 
         reserved = campaign.reserved_budget or Decimal("0")
