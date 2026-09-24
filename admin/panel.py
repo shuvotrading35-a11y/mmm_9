@@ -268,30 +268,54 @@ async def admin_campaigns_reply(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def admin_sponsors_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """💼 Sponsors — show ALL sponsors with status icons."""
     if not _require_admin(update.effective_user.id):
         return
+
     async with get_session() as session:
         from sqlalchemy import select
         from models.sponsor import Sponsor, SponsorStatus
 
-        pending = await session.execute(
+        # Pending first, then approved, then rest
+        pending_result = await session.execute(
             select(Sponsor).where(Sponsor.status == SponsorStatus.PENDING).limit(10)
         )
-        rows = [
-            {"id": s.id, "user_id": s.user_id}
-            for s in pending.scalars().all()
+        pending_rows = [
+            {"id": s.id, "user_id": s.user_id, "status": "PENDING",
+             "available": s.available_balance}
+            for s in pending_result.scalars().all()
+        ]
+
+        approved_result = await session.execute(
+            select(Sponsor).where(Sponsor.status == SponsorStatus.APPROVED).limit(10)
+        )
+        approved_rows = [
+            {"id": s.id, "user_id": s.user_id, "status": "APPROVED",
+             "available": s.available_balance}
+            for s in approved_result.scalars().all()
         ]
 
     buttons = []
-    for s in rows:
+
+    for s in pending_rows:
         buttons.append([InlineKeyboardButton(
-            f"⏳ Sponsor #{s['id']} (user {s['user_id']})",
+            f"⏳ #{s['id']} — user {s['user_id']} — {fmt_usdt(s['available'])} USDT",
             callback_data=f"admin:sponsor_view:{s['id']}"
         )])
+
+    for s in approved_rows:
+        buttons.append([InlineKeyboardButton(
+            f"✅ #{s['id']} — user {s['user_id']} — {fmt_usdt(s['available'])} USDT",
+            callback_data=f"admin:sponsor_view:{s['id']}"
+        )])
+
     buttons.append([InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="admin:back")])
 
     await update.message.reply_text(
-        f"💼 <b>SPONSORS</b>\n\nPending approval: <b>{len(rows)}</b>",
+        f"💼 <b>SPONSORS</b>\n\n"
+        f"⏳ Pending: <b>{len(pending_rows)}</b>\n"
+        f"✅ Approved: <b>{len(approved_rows)}</b>\n\n"
+        + ("Tap a sponsor to manage it." if (pending_rows or approved_rows) else "No sponsors yet."),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
