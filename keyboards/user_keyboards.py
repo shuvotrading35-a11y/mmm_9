@@ -27,7 +27,7 @@ def main_menu_keyboard(is_sponsor: bool = False) -> ReplyKeyboardMarkup:
         ],
         [
             KeyboardButton("💳 Withdraw", style="success"),
-            KeyboardButton("📊 Statistics", style="primary"),
+            KeyboardButton("📊 Stats", style="primary"),
         ],
         [
             KeyboardButton("📣 Promotion", style="primary"),
