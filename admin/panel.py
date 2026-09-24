@@ -117,6 +117,10 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         await _admin_reject_sponsor(query, int(parts[2]), user.id)
     elif action.startswith("sponsor_suspend") and len(parts) > 2:
         await _admin_suspend_sponsor(query, int(parts[2]), user.id)
+    elif action.startswith("sponsor_add_balance") and len(parts) > 2:
+        await _admin_sponsor_add_balance_prompt(query, context, int(parts[2]))
+    elif action.startswith("sponsor_balance_confirm") and len(parts) > 2:
+        await _admin_sponsor_balance_confirm(query, context, int(parts[2]), user.id)
     elif action.startswith("wd_approve") and len(parts) > 2:
         await _admin_approve_withdrawal(query, int(parts[2]), user.id)
     elif action.startswith("wd_reject") and len(parts) > 2:
@@ -1022,23 +1026,10 @@ async def _admin_view_sponsor(query, sponsor_id: int) -> None:
         f"💸 Total Spent: <b>{fmt_usdt(sponsor.total_spent)} USDT</b>\n"
     )
 
-    buttons = []
-    if status_str == "PENDING":
-        buttons.append([
-            InlineKeyboardButton("✅ Approve", callback_data=f"admin:sponsor_approve:{sponsor.id}"),
-            InlineKeyboardButton("❌ Reject", callback_data=f"admin:sponsor_reject:{sponsor.id}"),
-        ])
-    if status_str == "APPROVED":
-        buttons.append([InlineKeyboardButton(
-            "🚫 Suspend", callback_data=f"admin:sponsor_suspend:{sponsor.id}"
-        )])
-
-    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin:sponsors")])
-
     await query.edit_message_text(
         text,
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(buttons),
+        reply_markup=sponsor_action_keyboard(sponsor.id, status_str),
     )
 
 
@@ -1141,4 +1132,212 @@ async def _admin_flagged_list(query) -> None:
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙 Back", callback_data="admin:back")]
         ]),
+    )
+
+# ══════════════════════════════════════════════════════════════════
+# Admin: Manually add balance to sponsor account
+# ══════════════════════════════════════════════════════════════════
+
+async def _admin_sponsor_add_balance_prompt(
+    query, context: ContextTypes.DEFAULT_TYPE, sponsor_id: int
+) -> None:
+    """Step 1 — show sponsor info and ask for amount."""
+    async with get_session() as session:
+        from models.sponsor import Sponsor
+        from models.user import User
+
+        sponsor = await session.get(Sponsor, sponsor_id)
+        if not sponsor:
+            await query.edit_message_text("❌ Sponsor not found.")
+            return
+        user = await session.get(User, sponsor.user_id)
+
+    username = f"@{user.username}" if user and user.username else f"ID:{sponsor.user_id}"
+    status_str = sponsor.status.value if hasattr(sponsor.status, "value") else str(sponsor.status)
+
+    context.user_data["admin_add_balance_sponsor_id"] = sponsor_id
+    context.user_data["admin_add_balance_sponsor_name"] = username
+    context.user_data["admin_add_balance_current"] = str(sponsor.available_balance)
+
+    await query.edit_message_text(
+        f"💳 <b>ADD BALANCE — Sponsor #{sponsor_id}</b>\n\n"
+        f"👤 Sponsor: <b>{username}</b>\n"
+        f"📌 Status: <b>{status_str}</b>\n"
+        f"💰 Current Balance: <b>{fmt_usdt(sponsor.available_balance)} USDT</b>\n\n"
+        f"Send the amount to add (USDT).\n"
+        f"Example: <code>10.5</code>\n\n"
+        f"Send /cancel to abort.",
+        parse_mode="HTML",
+    )
+    context.user_data["admin_awaiting_sponsor_balance"] = True
+
+
+async def admin_sponsor_balance_input_reply(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Step 2 — receive amount text and ask for confirmation.
+    Early-exits for non-admins and when no awaiting state is set.
+    """
+    if not settings.is_admin(update.effective_user.id):
+        return  # Not an admin — let next handler deal with it
+
+    # Only handle when specifically waiting for sponsor balance input
+    if not context.user_data.get("admin_awaiting_sponsor_balance"):
+        return  # Not in this flow — pass through
+
+    text = update.message.text.strip()
+
+    if text.lower() in ("/cancel", "cancel"):
+        context.user_data.pop("admin_awaiting_sponsor_balance", None)
+        context.user_data.pop("admin_add_balance_sponsor_id", None)
+        await update.message.reply_text(
+            "❌ Cancelled.",
+            reply_markup=admin_main_reply_keyboard(),
+        )
+        return
+
+    try:
+        from decimal import Decimal, InvalidOperation
+        amount = Decimal(text)
+        if amount <= 0:
+            raise ValueError
+    except (InvalidOperation, ValueError):
+        await update.message.reply_text(
+            "❌ Invalid amount. Send a positive number like <code>5.00</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    sponsor_id = context.user_data.get("admin_add_balance_sponsor_id")
+    username = context.user_data.get("admin_add_balance_sponsor_name", "")
+    current = context.user_data.get("admin_add_balance_current", "0")
+
+    context.user_data["admin_add_balance_amount"] = str(amount)
+    context.user_data["admin_awaiting_sponsor_balance"] = False
+    context.user_data["admin_awaiting_sponsor_balance_confirm"] = True
+
+    await update.message.reply_text(
+        f"⚠️ <b>CONFIRM BALANCE ADD</b>\n\n"
+        f"Sponsor #{sponsor_id} ({username})\n"
+        f"Current balance: <b>{current} USDT</b>\n"
+        f"Adding: <b>{fmt_usdt(amount)} USDT</b>\n"
+        f"New balance: <b>{fmt_usdt(Decimal(current) + amount)} USDT</b>\n\n"
+        f"Confirm?",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Confirm", callback_data=f"admin:sponsor_balance_confirm:{sponsor_id}"),
+                InlineKeyboardButton("❌ Cancel", callback_data=f"admin:sponsor_view:{sponsor_id}"),
+            ]
+        ]),
+    )
+
+
+async def _admin_sponsor_balance_confirm(
+    query, context: ContextTypes.DEFAULT_TYPE, sponsor_id: int, admin_id: int
+) -> None:
+    """Step 3 — execute the credit after admin confirms."""
+    import hashlib
+    import uuid
+    from decimal import Decimal
+
+    amount_str = context.user_data.pop("admin_add_balance_amount", None)
+    context.user_data.pop("admin_awaiting_sponsor_balance_confirm", None)
+    context.user_data.pop("admin_add_balance_sponsor_id", None)
+    context.user_data.pop("admin_add_balance_sponsor_name", None)
+    context.user_data.pop("admin_add_balance_current", None)
+
+    if not amount_str:
+        await query.edit_message_text("❌ Session expired. Start over from the sponsor panel.")
+        return
+
+    amount = Decimal(amount_str)
+
+    idempotency_key = hashlib.sha256(
+        f"admin_credit:{sponsor_id}:{amount}:{uuid.uuid4()}:{settings.SECRET_SALT}".encode()
+    ).hexdigest()
+
+    try:
+        async with get_session() as session:
+            async with session.begin():
+                from services.ledger_service import LedgerService
+                from models.transaction import TransactionType
+                from models.sponsor import Sponsor
+                from models.user import User
+
+                tx = await LedgerService.credit_sponsor(
+                    session=session,
+                    sponsor_id=sponsor_id,
+                    amount=amount,
+                    tx_type=TransactionType.ADMIN_CREDIT,
+                    idempotency_key=idempotency_key,
+                    description=f"Manual credit by admin {admin_id}",
+                )
+
+                # Fetch updated info for confirmation message
+                sponsor = await session.get(Sponsor, sponsor_id)
+                user = await session.get(User, sponsor.user_id) if sponsor else None
+
+                # Audit log
+                from models.audit_log import AuditLog
+                log_entry = AuditLog(
+                    admin_id=admin_id,
+                    action="sponsor_manual_credit",
+                    target_type="sponsor",
+                    target_id=sponsor_id,
+                    new_value={
+                        "amount": str(amount),
+                        "tx_id": tx.id,
+                        "new_balance": str(sponsor.available_balance) if sponsor else "?",
+                    },
+                )
+                session.add(log_entry)
+
+        username = f"@{user.username}" if user and user.username else f"ID:{sponsor.user_id if sponsor else '?'}"
+        new_balance = sponsor.available_balance if sponsor else Decimal("0")
+
+        log.info(
+            "Admin manually credited sponsor",
+            admin_id=admin_id,
+            sponsor_id=sponsor_id,
+            amount=str(amount),
+            tx_id=tx.id,
+        )
+
+        # Notify the sponsor
+        if user:
+            import asyncio
+            asyncio.create_task(
+                _send_sponsor_balance_notification(user.id, amount, new_balance)
+            )
+
+        await query.edit_message_text(
+            f"✅ <b>Balance Added Successfully</b>\n\n"
+            f"Sponsor #{sponsor_id} ({username})\n"
+            f"Added: <b>{fmt_usdt(amount)} USDT</b>\n"
+            f"New Balance: <b>{fmt_usdt(new_balance)} USDT</b>\n"
+            f"TX #{tx.id}",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 View Sponsor", callback_data=f"admin:sponsor_view:{sponsor_id}")]
+            ]),
+        )
+
+    except Exception as e:
+        log.error("Admin sponsor credit failed", error=str(e), sponsor_id=sponsor_id)
+        await query.edit_message_text(
+            f"❌ Failed to add balance: <code>{str(e)[:200]}</code>",
+            parse_mode="HTML",
+        )
+
+
+async def _send_sponsor_balance_notification(user_id: int, amount, new_balance) -> None:
+    """Notify sponsor that admin added balance to their account."""
+    from services.notification_service import NotificationService
+    from services.notification_service import _send
+    await _send(
+        user_id,
+        f"💳 <b>Balance Added</b>\n\n"
+        f"An admin has added <b>{fmt_usdt(amount)} USDT</b> to your sponsor account.\n"
+        f"💰 New Balance: <b>{fmt_usdt(new_balance)} USDT</b>",
     )
