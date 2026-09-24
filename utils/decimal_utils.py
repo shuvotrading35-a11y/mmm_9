@@ -17,23 +17,29 @@ def safe_decimal(value) -> Decimal:
         return Decimal("0")
 
 
-def fmt_usdt(amount, decimals: int = 8) -> str:
-    """Format USDT amount: 0.00150000
-    
-    Accepts Decimal, int, float, str, or None — always returns a fixed-point string.
+def fmt_usdt(amount, decimals: int = 4) -> str:
+    """Format USDT amount as fixed-point string, e.g. 0.0015, 10.0000.
+
+    Never uses scientific notation (0E-8). Accepts Decimal, int, float,
+    str, or None.
     """
     d = safe_decimal(amount)
     quantizer = Decimal(10) ** -decimals
-    return str(d.quantize(quantizer, rounding=ROUND_DOWN))
+    try:
+        q = d.quantize(quantizer, rounding=ROUND_DOWN)
+    except Exception:
+        q = Decimal("0")
+    # f-string forces fixed-point notation (str(q) can produce 0E-8).
+    return f"{q:.{decimals}f}"
 
 
 def fmt_usdt_short(amount) -> str:
     """Format USDT with trailing zero removal: 0.0015
-    
+
     Accepts Decimal, int, float, str, or None.
     """
     d = safe_decimal(amount)
-    return f"{d:.8f}".rstrip("0").rstrip(".")
+    return f"{d:.8f}".rstrip("0").rstrip(".") or "0"
 
 
 def parse_usdt(value: str) -> Decimal:
