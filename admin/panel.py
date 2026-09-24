@@ -13,9 +13,6 @@ from keyboards.admin_keyboards import (
     admin_main_reply_keyboard,
     admin_back_reply_keyboard,
     admin_cancel_reply_keyboard,
-    admin_users_filter_reply_keyboard,
-    admin_campaigns_filter_reply_keyboard,
-    admin_withdrawals_filter_reply_keyboard,
     user_action_keyboard,
     campaign_action_keyboard,
     withdrawal_action_keyboard,
@@ -83,7 +80,7 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
     elif action == "audit":
         await _admin_audit(query)
 
-    # ── NEW: view branches ──
+    # ── View branches ──
     elif action == "sponsor_view" and len(parts) > 2:
         await _admin_view_sponsor(query, int(parts[2]))
     elif action == "campaign_view" and len(parts) > 2:
@@ -94,7 +91,8 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         await _admin_banned_list(query)
     elif action == "flagged":
         await _admin_flagged_list(query)
-    # ── END NEW ──
+    elif action == "user_search":
+        await _admin_user_search_prompt(query)
 
     elif action == "back":
         await query.edit_message_text(
@@ -111,14 +109,19 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         await _admin_reject_campaign(query, int(parts[2]), user.id)
     elif action.startswith("campaign_pause") and len(parts) > 2:
         await _admin_pause_campaign(query, int(parts[2]), user.id)
+    elif action.startswith("campaign_resume") and len(parts) > 2:
+        await _admin_resume_campaign(query, int(parts[2]), user.id)
     elif action.startswith("sponsor_approve") and len(parts) > 2:
         await _admin_approve_sponsor(query, int(parts[2]), user.id)
+    elif action.startswith("sponsor_reject") and len(parts) > 2:
+        await _admin_reject_sponsor(query, int(parts[2]), user.id)
+    elif action.startswith("sponsor_suspend") and len(parts) > 2:
+        await _admin_suspend_sponsor(query, int(parts[2]), user.id)
     elif action.startswith("wd_approve") and len(parts) > 2:
         await _admin_approve_withdrawal(query, int(parts[2]), user.id)
     elif action.startswith("wd_reject") and len(parts) > 2:
         await _admin_reject_withdrawal(query, int(parts[2]), user.id)
     else:
-        # ── CHANGED: show unknown action instead of silently returning to panel ──
         await query.edit_message_text(
             f"❓ Unknown action: <code>{data}</code>",
             parse_mode="HTML",
@@ -126,7 +129,7 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
 
 
 # ══════════════════════════════════════════════════════════════════
-# Reply keyboard handlers
+# Reply keyboard handlers — show data directly (no filter step)
 # ══════════════════════════════════════════════════════════════════
 
 async def admin_panel_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -140,22 +143,81 @@ async def admin_panel_reply_handler(update: Update, context: ContextTypes.DEFAUL
 
 
 async def admin_users_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """👥 Users — show counts + inline actions directly."""
     if not _require_admin(update.effective_user.id):
         return
+
+    async with get_session() as session:
+        from sqlalchemy import select, func as sa_func
+        from models.user import User, UserStatus
+
+        total = (await session.execute(select(sa_func.count(User.id)))).scalar()
+        active = (await session.execute(
+            select(sa_func.count(User.id)).where(User.status == UserStatus.ACTIVE)
+        )).scalar()
+        banned = (await session.execute(
+            select(sa_func.count(User.id)).where(User.status == UserStatus.BANNED)
+        )).scalar()
+        flagged = (await session.execute(
+            select(sa_func.count(User.id)).where(User.status == UserStatus.FLAGGED)
+        )).scalar()
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔍 Search User", callback_data="admin:user_search")],
+        [InlineKeyboardButton("🚫 View Banned", callback_data="admin:banned")],
+        [InlineKeyboardButton("⚠️ View Flagged", callback_data="admin:flagged")],
+        [InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="admin:back")],
+    ])
+
     await update.message.reply_text(
-        "👥 <b>USERS</b>\n\nChoose a filter:",
+        f"👥 <b>USERS</b>\n\n"
+        f"Total: <b>{total:,}</b>\n"
+        f"Active: <b>{active:,}</b>\n"
+        f"Flagged: <b>{flagged:,}</b>\n"
+        f"Banned: <b>{banned:,}</b>",
         parse_mode="HTML",
-        reply_markup=admin_users_filter_reply_keyboard(),
+        reply_markup=keyboard,
     )
 
 
 async def admin_campaigns_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """📋 Campaigns — show counts + pending list directly."""
     if not _require_admin(update.effective_user.id):
         return
+
+    async with get_session() as session:
+        from sqlalchemy import select, func as sa_func
+        from models.campaign import Campaign, CampaignStatus
+
+        counts = {}
+        for status in CampaignStatus:
+            count = (await session.execute(
+                select(sa_func.count(Campaign.id)).where(Campaign.status == status)
+            )).scalar()
+            counts[status] = count
+
+        pending = await session.execute(
+            select(Campaign).where(Campaign.status == CampaignStatus.PENDING).limit(5)
+        )
+        pending_list = pending.scalars().all()
+
+    buttons = []
+    for c in pending_list:
+        buttons.append([InlineKeyboardButton(
+            f"⏳ #{c.id}: {c.title[:30]}",
+            callback_data=f"admin:campaign_view:{c.id}"
+        )])
+    buttons.append([InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="admin:back")])
+
+    status_lines = "\n".join(
+        f"{s.value}: <b>{counts[s]:,}</b>" for s in CampaignStatus
+    )
+
     await update.message.reply_text(
-        "📋 <b>CAMPAIGNS</b>\n\nChoose a filter:",
+        f"📋 <b>CAMPAIGNS</b>\n\n{status_lines}\n\n"
+        + ("⏳ <b>Pending Approval:</b>" if pending_list else "✅ No pending campaigns"),
         parse_mode="HTML",
-        reply_markup=admin_campaigns_filter_reply_keyboard(),
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
 
 
@@ -177,19 +239,17 @@ async def admin_sponsors_reply(update: Update, context: ContextTypes.DEFAULT_TYP
             f"⏳ Sponsor #{s.id} (user {s.user_id})",
             callback_data=f"admin:sponsor_view:{s.id}"
         )])
+    buttons.append([InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="admin:back")])
 
     text = (
         f"💼 <b>SPONSORS</b>\n\n"
         f"Pending approval: <b>{len(pending_list)}</b>"
     )
 
-    if buttons:
-        await update.message.reply_text(
-            text, parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
-    else:
-        await update.message.reply_text(text, parse_mode="HTML")
+    await update.message.reply_text(
+        text, parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
 
 
 async def admin_deposits_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -218,8 +278,10 @@ async def admin_deposits_reply(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def admin_withdrawals_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """💳 Withdrawals — show pending list directly."""
     if not _require_admin(update.effective_user.id):
         return
+
     async with get_session() as session:
         from sqlalchemy import select
         from models.withdrawal import Withdrawal, WithdrawalStatus
@@ -238,19 +300,15 @@ async def admin_withdrawals_reply(update: Update, context: ContextTypes.DEFAULT_
             f"💵 #{wd.id} — {fmt_usdt(wd.amount)} USDT",
             callback_data=f"admin:wd_view:{wd.id}"
         )])
+    buttons.append([InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="admin:back")])
 
     text = f"💳 <b>WITHDRAWALS</b>\n\nPending: <b>{len(pending_list)}</b>"
 
-    if buttons:
-        await update.message.reply_text(
-            text, parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
-    else:
-        await update.message.reply_text(
-            text, parse_mode="HTML",
-            reply_markup=admin_withdrawals_filter_reply_keyboard(),
-        )
+    await update.message.reply_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
 
 
 async def admin_referrals_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -490,6 +548,17 @@ async def _admin_users(query) -> None:
     )
 
 
+async def _admin_user_search_prompt(query) -> None:
+    await query.edit_message_text(
+        "🔍 <b>SEARCH USER</b>\n\n"
+        "Send the user ID to search (or use /admin to go back).",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back", callback_data="admin:users")]
+        ]),
+    )
+
+
 async def _admin_campaigns(query) -> None:
     async with get_session() as session:
         from sqlalchemy import select, func as sa_func
@@ -702,9 +771,11 @@ async def _admin_audit(query) -> None:
             f"• [{fmt_datetime(entry.created_at)}] "
             f"Admin {entry.admin_id}: {entry.action} on {entry.target_type} #{entry.target_id}"
         )
+    if not logs:
+        lines.append("No audit logs yet.")
 
     await query.edit_message_text(
-        "\n".join(lines) or "No audit logs yet.",
+        "\n".join(lines),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙 Back", callback_data="admin:back")]
@@ -725,7 +796,7 @@ async def _admin_broadcast_prompt(query, context) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════
-# Action handlers (called by callbacks)
+# Action handlers
 # ══════════════════════════════════════════════════════════════════
 
 async def _admin_ban_user(query, target_user_id: int, admin_id: int) -> None:
@@ -828,6 +899,25 @@ async def _admin_pause_campaign(query, campaign_id: int, admin_id: int) -> None:
     await query.edit_message_text(f"⏸ Campaign #{campaign_id} paused.")
 
 
+async def _admin_resume_campaign(query, campaign_id: int, admin_id: int) -> None:
+    async with get_session() as session:
+        async with session.begin():
+            from models.campaign import Campaign, CampaignStatus
+            from models.audit_log import AuditLog
+
+            campaign = await session.get(Campaign, campaign_id)
+            if campaign and campaign.status == CampaignStatus.PAUSED:
+                campaign.status = CampaignStatus.ACTIVE
+            session.add(AuditLog(
+                admin_id=admin_id,
+                action="RESUME_CAMPAIGN",
+                target_type="campaign",
+                target_id=campaign_id,
+            ))
+
+    await query.edit_message_text(f"▶️ Campaign #{campaign_id} resumed.")
+
+
 async def _admin_approve_sponsor(query, sponsor_id: int, admin_id: int) -> None:
     async with get_session() as session:
         async with session.begin():
@@ -835,6 +925,44 @@ async def _admin_approve_sponsor(query, sponsor_id: int, admin_id: int) -> None:
             await SponsorService.approve_sponsor(session, sponsor_id, admin_id)
 
     await query.edit_message_text(f"✅ Sponsor #{sponsor_id} approved.")
+
+
+async def _admin_reject_sponsor(query, sponsor_id: int, admin_id: int) -> None:
+    async with get_session() as session:
+        async with session.begin():
+            from models.sponsor import Sponsor, SponsorStatus
+            from models.audit_log import AuditLog
+
+            sponsor = await session.get(Sponsor, sponsor_id)
+            if sponsor:
+                sponsor.status = SponsorStatus.REJECTED
+            session.add(AuditLog(
+                admin_id=admin_id,
+                action="REJECT_SPONSOR",
+                target_type="sponsor",
+                target_id=sponsor_id,
+            ))
+
+    await query.edit_message_text(f"❌ Sponsor #{sponsor_id} rejected.")
+
+
+async def _admin_suspend_sponsor(query, sponsor_id: int, admin_id: int) -> None:
+    async with get_session() as session:
+        async with session.begin():
+            from models.sponsor import Sponsor, SponsorStatus
+            from models.audit_log import AuditLog
+
+            sponsor = await session.get(Sponsor, sponsor_id)
+            if sponsor:
+                sponsor.status = SponsorStatus.SUSPENDED
+            session.add(AuditLog(
+                admin_id=admin_id,
+                action="SUSPEND_SPONSOR",
+                target_type="sponsor",
+                target_id=sponsor_id,
+            ))
+
+    await query.edit_message_text(f"🚫 Sponsor #{sponsor_id} suspended.")
 
 
 async def _admin_approve_withdrawal(query, withdrawal_id: int, admin_id: int) -> None:
@@ -865,7 +993,7 @@ async def _admin_reject_withdrawal(query, withdrawal_id: int, admin_id: int) -> 
 
 
 # ══════════════════════════════════════════════════════════════════
-# NEW: View handlers — sponsor / campaign / withdrawal detail
+# View handlers — sponsor / campaign / withdrawal detail
 # ══════════════════════════════════════════════════════════════════
 
 async def _admin_view_sponsor(query, sponsor_id: int) -> None:
