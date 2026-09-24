@@ -111,15 +111,27 @@ def user_detail_keyboard(user_id: int, status: str) -> InlineKeyboardMarkup:
 
 def campaign_action_keyboard(campaign_id: int, status: str) -> InlineKeyboardMarkup:
     buttons = []
+
     if status == "PENDING":
         buttons.append([
             InlineKeyboardButton("✅ Approve", callback_data=f"admin:campaign_approve:{campaign_id}"),
             InlineKeyboardButton("❌ Reject", callback_data=f"admin:campaign_reject:{campaign_id}"),
         ])
     if status == "ACTIVE":
-        buttons.append([InlineKeyboardButton("⏸ Pause", callback_data=f"admin:campaign_pause:{campaign_id}")])
+        buttons.append([InlineKeyboardButton(
+            "⏸ Pause", callback_data=f"admin:campaign_pause:{campaign_id}"
+        )])
     if status == "PAUSED":
-        buttons.append([InlineKeyboardButton("▶️ Resume", callback_data=f"admin:campaign_resume:{campaign_id}")])
+        buttons.append([InlineKeyboardButton(
+            "▶️ Resume", callback_data=f"admin:campaign_resume:{campaign_id}"
+        )])
+
+    if status != "COMPLETED":
+        buttons.append([InlineKeyboardButton(
+            "🗑 Delete (Force)",
+            callback_data=f"admin:campaign_delete:{campaign_id}",
+        )])
+
     buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin:campaigns")])
     return InlineKeyboardMarkup(buttons)
 
@@ -137,7 +149,6 @@ def withdrawal_action_keyboard(withdrawal_id: int) -> InlineKeyboardMarkup:
 def sponsor_action_keyboard(sponsor_id: int, status: str) -> InlineKeyboardMarkup:
     buttons = []
 
-    # Add Balance is always available
     buttons.append([InlineKeyboardButton(
         "💰 Add Balance",
         callback_data=f"admin:sponsor_add_balance:{sponsor_id}",
