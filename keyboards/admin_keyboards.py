@@ -31,7 +31,7 @@ def admin_main_reply_keyboard() -> ReplyKeyboardMarkup:
                 KeyboardButton("🎁 Referrals", style="primary"),
             ],
             [
-                KeyboardButton("📊 Statistics", style="primary"),
+                KeyboardButton("📊 Admin Stats", style="primary"),
                 KeyboardButton("📢 Broadcast", style="primary"),
             ],
             [
