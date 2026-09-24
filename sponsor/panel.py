@@ -531,52 +531,104 @@ async def sponsor_text_input_handler(update: Update, context: ContextTypes.DEFAU
 
     # ── Campaign creation: enter_budget → summary ──
     if step == "enter_budget":
-        try:
-            from decimal import Decimal
-            budget = Decimal(text)
-            if budget <= 0:
-                raise ValueError
-        except Exception:
-            await update.message.reply_text(
-                "❌ Invalid budget. Send a number like 100"
-            )
-            return
-        context.user_data["campaign_budget"] = str(budget)
+    from decimal import Decimal
+    from datetime import datetime, timedelta, timezone
+    try:
+        budget = Decimal(text)
+        if budget <= 0:
+            raise ValueError
+    except Exception:
+        await update.message.reply_text("❌ Invalid budget. Send a number like 100")
+        return
 
-        # Summary
-        summary = (
-            f"📋 <b>Campaign Summary</b>\n\n"
-            f"📌 Type: {context.user_data.get('campaign_type')}\n"
-            f"⏱ Duration: {context.user_data.get('campaign_duration')} day(s)\n"
-            f"🔗 Channel: {context.user_data.get('campaign_username')}\n"
-            f"📝 Title: {context.user_data.get('campaign_title')}\n"
-            f"💰 Reward/task: {context.user_data.get('campaign_reward')} USDT\n"
-            f"💵 Total budget: {context.user_data.get('campaign_budget')} USDT\n\n"
-            f"⚠️ Campaign creation is not yet wired to the database.\n"
-            f"Please contact support to complete your campaign."
-        )
-        context.user_data.pop("sponsor_step", None)
+    user = update.effective_user
+    reward = Decimal(context.user_data.get("campaign_reward", "0"))
+    duration = int(context.user_data.get("campaign_duration", 1))
+    task_type_str = context.user_data.get("campaign_type", "CHANNEL_JOIN")
+    username_raw = context.user_data.get("campaign_username", "")
+    title = context.user_data.get("campaign_title", "Untitled")
+
+    # username normalise — `@` ছাড়া রাখি DB-তে
+    username = username_raw.lstrip("@").strip()
+
+    # completion_limit = total_budget / reward_per_user
+    try:
+        completion_limit = int(budget / reward)
+    except Exception:
+        completion_limit = 0
+
+    if completion_limit <= 0:
         await update.message.reply_text(
-            summary,
+            "❌ Reward is too large for this budget. "
+            "Increase budget or reduce reward."
+        )
+        return
+
+    try:
+        async with get_session() as session:
+            async with session.begin():
+                from services.sponsor_service import SponsorService
+                from models.campaign import Campaign, CampaignStatus, TaskType
+
+                sponsor = await SponsorService.get_sponsor_by_user(session, user.id)
+                if not sponsor:
+                    await update.message.reply_text("❌ No sponsor account found.")
+                    return
+
+                # Task type string → enum
+                try:
+                    task_type = TaskType(task_type_str)
+                except ValueError:
+                    task_type = TaskType.CHANNEL_JOIN
+
+                # expires_at = এখন + duration দিন
+                expires_at = datetime.now(tz=timezone.utc) + timedelta(days=duration)
+
+                campaign = Campaign(
+                    sponsor_id=sponsor.id,
+                    title=title[:256],
+                    description=None,
+                    task_type=task_type,
+                    telegram_chat_id=None,
+                    telegram_username=username or None,
+                    invite_url=f"https://t.me/{username}" if username else None,
+                    reward_per_user=reward,
+                    completion_limit=completion_limit,
+                    completed_count=0,
+                    total_budget=budget,
+                    reserved_budget=Decimal("0"),
+                    spent_budget=Decimal("0"),
+                    status=CampaignStatus.PENDING,
+                    expires_at=expires_at,
+                )
+                session.add(campaign)
+                await session.flush()
+                campaign_id = campaign.id
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            f"✅ <b>Campaign Submitted!</b>\n\n"
+            f"📌 ID: <b>#{campaign_id}</b>\n"
+            f"📝 Title: {title}\n"
+            f"🔗 Channel: @{username}\n"
+            f"📌 Type: {task_type_str}\n"
+            f"💰 Reward/task: <b>{fmt_usdt(reward)} USDT</b>\n"
+            f"💵 Total budget: <b>{fmt_usdt(budget)} USDT</b>\n"
+            f"👥 Max completions: <b>{completion_limit:,}</b>\n"
+            f"⏱ Duration: <b>{duration} day(s)</b>\n\n"
+            f"⏳ Your campaign is now <b>pending admin approval</b>.\n"
+            f"You'll be notified once it's approved.\n"
+            f"After approval you'll need to <b>fund it</b> before it goes live.",
             parse_mode="HTML",
             reply_markup=sponsor_main_reply_keyboard(),
         )
         return
 
-    # ── Deposit: enter_tx_hash ──
-    if step == "enter_tx_hash":
-        if not text.startswith("0x") or len(text) < 60:
-            await update.message.reply_text(
-                "❌ Invalid transaction hash.\n\n"
-                "It should start with <code>0x</code> and be at least 60 characters.",
-                parse_mode="HTML",
-                reply_markup=sponsor_cancel_reply_keyboard(),
-            )
-            return
-        context.user_data.pop("sponsor_step", None)
+    except Exception as e:
+        log.exception("Campaign creation failed", error=str(e))
         await update.message.reply_text(
-            f"✅ Transaction hash received:\n<code>{text}</code>\n\n"
-            "Your deposit will be verified shortly. You'll be notified once confirmed.",
+            f"❌ Failed to create campaign:\n<code>{str(e)[:300]}</code>",
             parse_mode="HTML",
             reply_markup=sponsor_main_reply_keyboard(),
         )
