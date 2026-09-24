@@ -7,6 +7,7 @@ from typing import Optional, List
 
 import structlog
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
@@ -39,14 +40,12 @@ class CampaignService:
         duration_days: int,
     ) -> Campaign:
         """Create a new campaign in PENDING status (awaiting admin approval)."""
-        # Validate sponsor
         sponsor = await session.get(Sponsor, sponsor_id)
         if not sponsor:
             raise CampaignValidationError("Sponsor not found")
         if sponsor.status != SponsorStatus.APPROVED:
             raise CampaignValidationError("Sponsor account not approved")
 
-        # Validate reward range
         if reward_per_user < settings.TASK_MIN_REWARD:
             raise CampaignValidationError(
                 f"Reward must be at least {settings.TASK_MIN_REWARD} USDT"
@@ -85,7 +84,6 @@ class CampaignService:
             budget=str(total_budget),
         )
 
-        # Notify admins
         from services.notification_service import NotificationService
         import asyncio
         asyncio.create_task(
@@ -103,24 +101,40 @@ class CampaignService:
         admin_id: int,
     ) -> Campaign:
         """Admin approves a PENDING campaign → PENDING_FUNDING."""
-        campaign = await session.get(Campaign, campaign_id)
+        result = await session.execute(
+            select(Campaign)
+            .options(selectinload(Campaign.sponsor))
+            .where(Campaign.id == campaign_id)
+        )
+        campaign = result.scalar_one_or_none()
         if not campaign:
             raise CampaignValidationError("Campaign not found")
         if campaign.status != CampaignStatus.PENDING:
-            raise CampaignValidationError(f"Campaign is {campaign.status}, cannot approve")
+            raise CampaignValidationError(
+                f"Campaign is {campaign.status}, cannot approve"
+            )
 
         campaign.status = CampaignStatus.PENDING_FUNDING
         campaign.approved_by = admin_id
         campaign.approved_at = datetime.now(tz=timezone.utc)
+
+        # ── session-এর ভিতরেই sponsor info বের করে নেওয়া (lazy load এড়াতে) ──
+        sponsor_user_id = campaign.sponsor.user_id
+        campaign_title = campaign.title
+        campaign_id_val = campaign.id
+
         await session.flush()
 
-        # Notify sponsor
         from services.notification_service import NotificationService
         import asyncio
         asyncio.create_task(
-            NotificationService.campaign_approved(
-                campaign.sponsor.user_id, campaign.title
-            )
+            NotificationService.campaign_approved(sponsor_user_id, campaign_title)
+        )
+
+        log.info(
+            "Campaign approved",
+            campaign_id=campaign_id_val,
+            admin_id=admin_id,
         )
 
         return campaign
@@ -148,7 +162,9 @@ class CampaignService:
         if campaign.sponsor_id != sponsor_id:
             raise CampaignValidationError("Not your campaign")
         if campaign.status != CampaignStatus.PENDING_FUNDING:
-            raise CampaignValidationError(f"Campaign cannot be funded in status {campaign.status}")
+            raise CampaignValidationError(
+                f"Campaign cannot be funded in status {campaign.status}"
+            )
 
         required = campaign.total_budget
         idem_key = hashlib.sha256(
@@ -234,7 +250,6 @@ class CampaignService:
                 f"expire_release:{campaign.id}:{settings.SECRET_SALT}".encode()
             ).hexdigest()
 
-            # Release unused reserved budget
             unused = campaign.reserved_budget
             if unused > Decimal("0"):
                 try:
@@ -290,7 +305,7 @@ class CampaignService:
         return {
             "id": campaign.id,
             "title": campaign.title,
-            "status": campaign.status,
+            "status": campaign.status.value if hasattr(campaign.status, "value") else str(campaign.status),
             "view_count": campaign.view_count,
             "click_count": campaign.click_count,
             "completed_count": campaign.completed_count,
