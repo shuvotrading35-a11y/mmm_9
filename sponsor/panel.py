@@ -1,6 +1,7 @@
 """
 Sponsor Panel — campaign management and wallet for approved sponsors.
 """
+import re
 import structlog
 from decimal import Decimal
 from telegram import (
@@ -24,6 +25,89 @@ from keyboards.sponsor_keyboards import (
 from utils.decimal_utils import fmt_usdt
 
 log = structlog.get_logger(__name__)
+
+
+# ══════════════════════════════════════════════════════════════════
+# Channel input parsing
+# ══════════════════════════════════════════════════════════════════
+
+def _parse_channel_input(raw: str) -> dict:
+    """
+    Parse user input into channel reference. Supports:
+      @username, username, https://t.me/username, t.me/username,
+      -1001234567890 (numeric chat id),
+      https://t.me/+abcDEF (private invite),
+      https://t.me/joinchat/xyz
+    Returns:
+      {"username": str|None, "chat_id": int|None,
+       "invite_url": str|None, "display": str}
+    """
+    s = (raw or "").strip()
+    if not s:
+        return {"username": None, "chat_id": None, "invite_url": None, "display": "—"}
+
+    # Numeric chat_id
+    if s.lstrip("-").isdigit():
+        try:
+            cid = int(s)
+            return {"username": None, "chat_id": cid,
+                    "invite_url": None, "display": str(cid)}
+        except ValueError:
+            pass
+
+    # Strip scheme
+    normalized = s
+    if normalized.startswith("https://"):
+        normalized = normalized[8:]
+    elif normalized.startswith("http://"):
+        normalized = normalized[7:]
+
+    # Strip t.me / telegram.me
+    for prefix in ("t.me/", "telegram.me/", "www.t.me/"):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix):]
+            break
+
+    # Strip query string
+    normalized = normalized.split("?")[0].strip().rstrip("/")
+
+    # Private invite — +code or joinchat/code
+    if normalized.startswith("+"):
+        code = normalized[1:]
+        return {
+            "username": None,
+            "chat_id": None,
+            "invite_url": f"https://t.me/+{code}",
+            "display": f"private invite (+{code[:6]}…)",
+        }
+    if normalized.startswith("joinchat/"):
+        code = normalized[len("joinchat/"):]
+        return {
+            "username": None,
+            "chat_id": None,
+            "invite_url": f"https://t.me/joinchat/{code}",
+            "display": f"private invite ({code[:6]}…)",
+        }
+
+    # t.me/c/12345 → internal chat_id
+    m = re.match(r"^c/(\d+)", normalized)
+    if m:
+        cid = -1000000000000 - int(m.group(1))
+        return {"username": None, "chat_id": cid,
+                "invite_url": None, "display": str(cid)}
+
+    # Otherwise — treat as username
+    username = normalized.lstrip("@").strip()
+
+    if not username:
+        return {"username": None, "chat_id": None, "invite_url": None, "display": "—"}
+
+    return {
+        "username": username,
+        "chat_id": None,
+        "invite_url": f"https://t.me/{username}",
+        "display": f"@{username}",
+    }
 
 
 def _status_str(status) -> str:
@@ -90,7 +174,6 @@ async def sponsor_panel_handler(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return
 
-        # session-এর ভিতরে সব values বের করে নেওয়া
         stats = {
             "available": sponsor.available_balance,
             "reserved": sponsor.reserved_balance,
@@ -172,7 +255,6 @@ async def sponsor_my_campaigns_reply(update: Update, context: ContextTypes.DEFAU
         from services.campaign_service import CampaignService
         campaigns = await CampaignService.get_sponsor_campaigns(session, sponsor_id)
 
-        # session-এর ভিতরেই সব ডেটা বের করে নেওয়া
         rows = [
             {
                 "id": c.id,
@@ -330,7 +412,14 @@ async def sponsor_duration_reply(update: Update, context: ContextTypes.DEFAULT_T
 
     await update.message.reply_text(
         f"✅ Duration: <b>{days} day(s)</b>\n\n"
-        "Now send the Telegram channel/group <b>@username</b> or <b>Chat ID</b>:",
+        "Now send the Telegram channel/group link or username.\n\n"
+        "<b>Any of these work:</b>\n"
+        "• <code>@channelname</code>\n"
+        "• <code>channelname</code>\n"
+        "• <code>https://t.me/channelname</code>\n"
+        "• <code>t.me/channelname</code>\n"
+        "• <code>-1001234567890</code> (numeric chat ID)\n"
+        "• <code>https://t.me/+inviteCode</code> (private invite)",
         parse_mode="HTML",
         reply_markup=sponsor_cancel_reply_keyboard(),
     )
@@ -438,7 +527,6 @@ async def _sponsor_list_campaigns(query, sponsor_id: int) -> None:
         from services.campaign_service import CampaignService
         campaigns = await CampaignService.get_sponsor_campaigns(session, sponsor_id)
 
-        # session-এর ভিতরে সব ডেটা plain dict-এ রূপান্তর
         rows = [
             {
                 "id": c.id,
@@ -588,11 +676,29 @@ async def sponsor_text_input_handler(update: Update, context: ContextTypes.DEFAU
 
     # ── Campaign creation: enter_username ──
     if step == "enter_username":
-        context.user_data["campaign_username"] = text
+        parsed = _parse_channel_input(text)
+
+        if not (parsed["username"] or parsed["chat_id"] or parsed["invite_url"]):
+            await update.message.reply_text(
+                "❌ I couldn't understand that.\n\n"
+                "Send one of:\n"
+                "• <code>@channelname</code>\n"
+                "• <code>https://t.me/channelname</code>\n"
+                "• <code>-1001234567890</code>\n"
+                "• <code>https://t.me/+inviteCode</code>",
+                parse_mode="HTML",
+                reply_markup=sponsor_cancel_reply_keyboard(),
+            )
+            return
+
+        context.user_data["campaign_username"] = parsed["username"]
+        context.user_data["campaign_chat_id"] = parsed["chat_id"]
+        context.user_data["campaign_invite_url"] = parsed["invite_url"]
         context.user_data["sponsor_step"] = "enter_title"
+
         await update.message.reply_text(
-            "✅ Channel saved.\n\n"
-            "Now send a <b>title</b> for this campaign:",
+            f"✅ Channel saved: <b>{parsed['display']}</b>\n\n"
+            f"Now send a <b>title</b> for this campaign:",
             parse_mode="HTML",
             reply_markup=sponsor_cancel_reply_keyboard(),
         )
@@ -647,10 +753,11 @@ async def sponsor_text_input_handler(update: Update, context: ContextTypes.DEFAU
         reward = Decimal(context.user_data.get("campaign_reward", "0"))
         duration = int(context.user_data.get("campaign_duration", 1))
         task_type_str = context.user_data.get("campaign_type", "CHANNEL_JOIN")
-        username_raw = context.user_data.get("campaign_username", "")
         title = context.user_data.get("campaign_title", "Untitled")
 
-        username = username_raw.lstrip("@").strip()
+        username = context.user_data.get("campaign_username")
+        chat_id = context.user_data.get("campaign_chat_id")
+        invite_url = context.user_data.get("campaign_invite_url")
 
         try:
             completion_limit = int(budget / reward)
@@ -674,7 +781,7 @@ async def sponsor_text_input_handler(update: Update, context: ContextTypes.DEFAU
                     if not sponsor:
                         await update.message.reply_text("❌ No sponsor account found.")
                         return
-                    sponsor_id = sponsor.id
+                    sponsor_id_val = sponsor.id
 
                     try:
                         task_type = TaskType(task_type_str)
@@ -684,13 +791,13 @@ async def sponsor_text_input_handler(update: Update, context: ContextTypes.DEFAU
                     expires_at = datetime.now(tz=timezone.utc) + timedelta(days=duration)
 
                     campaign = Campaign(
-                        sponsor_id=sponsor_id,
+                        sponsor_id=sponsor_id_val,
                         title=title[:256],
                         description=None,
                         task_type=task_type,
-                        telegram_chat_id=None,
-                        telegram_username=username or None,
-                        invite_url=f"https://t.me/{username}" if username else None,
+                        telegram_chat_id=chat_id,
+                        telegram_username=username,
+                        invite_url=invite_url,
                         reward_per_user=reward,
                         completion_limit=completion_limit,
                         completed_count=0,
@@ -706,11 +813,16 @@ async def sponsor_text_input_handler(update: Update, context: ContextTypes.DEFAU
 
             context.user_data.clear()
 
+            display = (
+                f"@{username}" if username
+                else (str(chat_id) if chat_id else (invite_url or "—"))
+            )
+
             await update.message.reply_text(
                 f"✅ <b>Campaign Submitted!</b>\n\n"
                 f"📌 ID: <b>#{campaign_id}</b>\n"
                 f"📝 Title: {title}\n"
-                f"🔗 Channel: @{username}\n"
+                f"🔗 Channel: {display}\n"
                 f"📌 Type: {task_type_str}\n"
                 f"💰 Reward/task: <b>{fmt_usdt(reward)} USDT</b>\n"
                 f"💵 Total budget: <b>{fmt_usdt(budget)} USDT</b>\n"
@@ -751,6 +863,7 @@ async def sponsor_text_input_handler(update: Update, context: ContextTypes.DEFAU
         )
         return
 
+
 # ══════════════════════════════════════════════════════════════════
 # Campaign delete flow
 # ══════════════════════════════════════════════════════════════════
@@ -774,7 +887,6 @@ async def _sponsor_delete_prompt(query, campaign_id: int, sponsor_id: int) -> No
         status_str = _status_str(campaign.status)
         reserved = campaign.reserved_budget or Decimal("0")
 
-    # Build warning text
     warning = ""
     if status_str in ("ACTIVE", "PAUSED") and reserved > Decimal("0"):
         warning = (
