@@ -1,9 +1,8 @@
 """
 Notification Service — sends messages to users via the bot.
 
-The bot instance is injected once at startup (post_init in bot.py).
-All send methods are best-effort: if the bot isn't set or the user has
-blocked the bot, the failure is logged and silently ignored.
+The bot instance is injected at startup, but we also lazily create one
+if needed so notifications never silently fail.
 """
 import asyncio
 import structlog
@@ -40,6 +39,20 @@ class NotificationService:
     def configure(cls, bot: Bot) -> None:
         cls.set_bot(bot)
 
+    @classmethod
+    def _ensure_bot(cls) -> Optional[Bot]:
+        """Return a Bot instance, lazily creating one if needed."""
+        if cls._bot is not None:
+            return cls._bot
+        try:
+            from config import settings
+            cls._bot = Bot(settings.BOT_TOKEN)
+            log.info("NotificationService: lazily created bot from settings")
+            return cls._bot
+        except Exception:
+            log.exception("NotificationService: failed to create bot lazily")
+            return None
+
     # ══════════════════════════════════════════════════════════════
     # Core send
     # ══════════════════════════════════════════════════════════════
@@ -53,11 +66,12 @@ class NotificationService:
         reply_markup=None,
     ) -> bool:
         """Send a message to a single user. Returns True on success."""
-        if cls._bot is None:
-            log.warning("NotificationService: bot not set — cannot send", user_id=user_id)
+        bot = cls._ensure_bot()
+        if bot is None:
+            log.warning("NotificationService: no bot available", user_id=user_id)
             return False
         try:
-            await cls._bot.send_message(
+            await bot.send_message(
                 chat_id=user_id,
                 text=text,
                 parse_mode=parse_mode,
@@ -66,7 +80,7 @@ class NotificationService:
             )
             return True
         except TelegramError as e:
-            log.debug("send_to_user failed", user_id=user_id, error=str(e))
+            log.warning("send_to_user failed", user_id=user_id, error=str(e))
             return False
         except Exception:
             log.exception("send_to_user unexpected error", user_id=user_id)
@@ -330,9 +344,7 @@ class NotificationService:
     async def task_reward(
         cls, user_id: int, amount: str, new_balance: str, task_title: str = ""
     ) -> None:
-        msg = (
-            f"🎉 <b>Task Reward Earned!</b>\n\n"
-        )
+        msg = f"🎉 <b>Task Reward Earned!</b>\n\n"
         if task_title:
             msg += f"📝 {task_title}\n"
         msg += (
@@ -342,11 +354,21 @@ class NotificationService:
         await cls.send_to_user(user_id, msg)
 
     @classmethod
-    async def task_failed(cls, user_id: int, task_title: str, reason: str = "") -> None:
-        msg = (
-            f"⚠️ <b>Task Verification Failed</b>\n\n"
-            f"📝 {task_title}"
+    async def task_reward_earned(
+        cls, user_id: int, amount, new_balance, task_title: str = ""
+    ) -> None:
+        """Alias that accepts Decimal/int/float — formats them safely."""
+        from utils.decimal_utils import fmt_usdt
+        await cls.task_reward(
+            user_id=user_id,
+            amount=fmt_usdt(amount),
+            new_balance=fmt_usdt(new_balance),
+            task_title=task_title,
         )
+
+    @classmethod
+    async def task_failed(cls, user_id: int, task_title: str, reason: str = "") -> None:
+        msg = f"⚠️ <b>Task Verification Failed</b>\n\n📝 {task_title}"
         if reason:
             msg += f"\n\n{reason}"
         await cls.send_to_user(user_id, msg)
