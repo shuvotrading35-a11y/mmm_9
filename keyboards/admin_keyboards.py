@@ -152,6 +152,7 @@ def withdrawal_action_keyboard(withdrawal_id: int) -> InlineKeyboardMarkup:
 def sponsor_action_keyboard(sponsor_id: int, status: str) -> InlineKeyboardMarkup:
     buttons = []
 
+    # Add Balance — always available
     buttons.append([InlineKeyboardButton(
         "💰 Add Balance",
         callback_data=f"admin:sponsor_add_balance:{sponsor_id}",
@@ -162,14 +163,20 @@ def sponsor_action_keyboard(sponsor_id: int, status: str) -> InlineKeyboardMarku
             InlineKeyboardButton("✅ Approve", callback_data=f"admin:sponsor_approve:{sponsor_id}"),
             InlineKeyboardButton("❌ Reject", callback_data=f"admin:sponsor_reject:{sponsor_id}"),
         ])
+
     if status == "APPROVED":
         buttons.append([InlineKeyboardButton(
             "🚫 Suspend", callback_data=f"admin:sponsor_suspend:{sponsor_id}"
         )])
 
+    if status in ("SUSPENDED", "REJECTED"):
+        buttons.append([InlineKeyboardButton(
+            "✅ Un-suspend (Reactivate)",
+            callback_data=f"admin:sponsor_activate:{sponsor_id}"
+        )])
+
     buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin:sponsors")])
     return InlineKeyboardMarkup(buttons)
-
 
 def deposit_action_keyboard(deposit_id: int, status: str) -> InlineKeyboardMarkup:
     """Action buttons for a specific deposit."""
