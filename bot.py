@@ -114,14 +114,22 @@ async def _global_force_join_gate(update: Update, context: ContextTypes.DEFAULT_
     """
     Global gate — runs BEFORE every other handler (group -20).
 
-    Any update from a user who hasn't joined all required channels is blocked
-    here, and the join prompt is sent. Raises ApplicationHandlerStop so no
-    other handler runs for that update.
-
-    Admins bypass. /start, /help, the verify button, and Cancel buttons are
-    allowed through so the user can actually join.
+    Blocks updates from users who haven't joined all required channels.
+    Admins bypass. Certain update types are allowed through.
     """
+    # Feature toggle
     if not settings.FORCE_JOIN_ENABLED:
+        return
+
+    # ── Skip chat_member / my_chat_member ──
+    # These drive leave-detection and bot-added-to-chat flows.
+    # They must NEVER be blocked by force-join gating, otherwise
+    # the ChatMemberHandler in group 0 never runs.
+    if update.chat_member or update.my_chat_member:
+        return
+
+    # Skip edited messages — nothing to gate
+    if update.edited_message:
         return
 
     user = update.effective_user
@@ -156,7 +164,6 @@ async def _global_force_join_gate(update: Update, context: ContextTypes.DEFAULT_
     except ApplicationHandlerStop:
         raise
     except Exception:
-        # Don't block bot on unexpected errors
         log.exception("Force-join gate error")
 
 
