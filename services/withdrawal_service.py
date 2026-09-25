@@ -3,7 +3,9 @@ Withdrawal Service — full withdrawal lifecycle management.
 PENDING → PROCESSING → PAID | FAILED
 Failed payouts MUST atomically refund user balance.
 """
+import asyncio
 import hashlib
+import uuid
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Optional
@@ -123,7 +125,6 @@ class WithdrawalService:
         Create withdrawal record and debit user balance atomically.
         Must be called within session.begin().
         """
-        import uuid
         idempotency_key = hashlib.sha256(
             f"wd_create:{user_id}:{amount}:{uuid.uuid4()}:{settings.SECRET_SALT}".encode()
         ).hexdigest()
@@ -150,12 +151,27 @@ class WithdrawalService:
         session.add(withdrawal)
         await session.flush()
 
+        # Snapshot values for notification
+        wd_id = withdrawal.id
+        wd_amount = withdrawal.amount
+
         log.info(
             "Withdrawal created",
             user_id=user_id,
             amount=str(amount),
-            withdrawal_id=withdrawal.id,
+            withdrawal_id=wd_id,
         )
+
+        # Notify admins of new withdrawal request (fire-and-forget)
+        from services.notification_service import NotificationService
+        asyncio.create_task(
+            NotificationService.notify_admin_new_withdrawal(
+                withdrawal_id=wd_id,
+                user_id=user_id,
+                amount=str(wd_amount),
+            )
+        )
+
         return withdrawal
 
     @staticmethod
@@ -202,6 +218,12 @@ class WithdrawalService:
             idempotency_key=withdrawal.idempotency_key,
         )
 
+        # Snapshot values for notifications before mutation
+        wd_id = withdrawal.id
+        wd_user_id = withdrawal.user_id
+        wd_amount = withdrawal.amount
+        wd_wallet = withdrawal.destination_wallet or "—"
+
         if result["success"]:
             withdrawal.status = WithdrawalStatus.PAID
             withdrawal.tx_hash = result["tx_hash"]
@@ -212,14 +234,27 @@ class WithdrawalService:
 
             log.info(
                 "Withdrawal paid",
-                withdrawal_id=withdrawal_id,
+                withdrawal_id=wd_id,
                 tx_hash=result["tx_hash"],
-                amount=str(withdrawal.amount),
+                amount=str(wd_amount),
             )
+
+            # Notify user (fire-and-forget)
+            from services.notification_service import NotificationService
+            asyncio.create_task(
+                NotificationService.withdrawal_approved(
+                    user_id=wd_user_id,
+                    amount=str(wd_amount),
+                    wallet=wd_wallet,
+                )
+            )
+
             return True
         else:
             # CRITICAL: Refund user balance on failure
-            await WithdrawalService._refund_failed_withdrawal(session, withdrawal, result["error"])
+            await WithdrawalService._refund_failed_withdrawal(
+                session, withdrawal, result["error"]
+            )
             return False
 
     @staticmethod
@@ -234,16 +269,21 @@ class WithdrawalService:
         """
         refund_key = _make_withdrawal_refund_key(withdrawal.id)
 
+        # Snapshot values before mutation
+        wd_id = withdrawal.id
+        wd_user_id = withdrawal.user_id
+        wd_amount = withdrawal.amount
+
         try:
             await LedgerService.credit_user(
                 session=session,
-                user_id=withdrawal.user_id,
-                amount=withdrawal.amount,
+                user_id=wd_user_id,
+                amount=wd_amount,
                 tx_type=TransactionType.WITHDRAWAL_RETURN,
-                reference_id=withdrawal.id,
+                reference_id=wd_id,
                 reference_type="withdrawal",
                 idempotency_key=refund_key,
-                description=f"Refund: failed withdrawal #{withdrawal.id}",
+                description=f"Refund: failed withdrawal #{wd_id}",
                 update_total_earned=False,
             )
             withdrawal.status = WithdrawalStatus.FAILED
@@ -253,16 +293,49 @@ class WithdrawalService:
 
             log.info(
                 "Failed withdrawal refunded",
-                withdrawal_id=withdrawal.id,
-                amount=str(withdrawal.amount),
-                user_id=withdrawal.user_id,
+                withdrawal_id=wd_id,
+                amount=str(wd_amount),
+                user_id=wd_user_id,
+            )
+
+            # Notify user (fire-and-forget)
+            from services.notification_service import NotificationService
+            asyncio.create_task(
+                NotificationService.withdrawal_rejected(
+                    user_id=wd_user_id,
+                    amount=str(wd_amount),
+                    reason=failure_reason[:200],
+                )
+            )
+
+            # Notify admins too — refunds are important to track
+            asyncio.create_task(
+                NotificationService.notify_admin(
+                    f"⚠️ <b>Withdrawal Failed & Refunded</b>\n\n"
+                    f"📌 ID: <b>#{wd_id}</b>\n"
+                    f"👤 User: <code>{wd_user_id}</code>\n"
+                    f"💵 Amount: <b>{wd_amount} USDT</b>\n"
+                    f"📝 Reason: {failure_reason[:200]}"
+                )
             )
         except Exception as e:
             log.critical(
                 "CRITICAL: Failed to refund withdrawal — manual intervention required",
-                withdrawal_id=withdrawal.id,
-                user_id=withdrawal.user_id,
-                amount=str(withdrawal.amount),
+                withdrawal_id=wd_id,
+                user_id=wd_user_id,
+                amount=str(wd_amount),
                 error=str(e),
+            )
+
+            # CRITICAL — alert admins
+            from services.notification_service import NotificationService
+            asyncio.create_task(
+                NotificationService.notify_admin(
+                    f"🚨 <b>CRITICAL: Refund Failed</b>\n\n"
+                    f"📌 Withdrawal ID: <b>#{wd_id}</b>\n"
+                    f"👤 User: <code>{wd_user_id}</code>\n"
+                    f"💵 Amount: <b>{wd_amount} USDT</b>\n\n"
+                    f"⚠️ Manual refund required immediately!"
+                )
             )
             raise  # Propagate — this is a critical error
