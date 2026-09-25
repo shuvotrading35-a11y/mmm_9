@@ -10,6 +10,8 @@ from telegram.ext import (
     MessageHandler, CallbackQueryHandler, filters,
     ContextTypes,
     ChatMemberHandler,
+    TypeHandler,
+    ApplicationHandlerStop,
 )
 
 from config import settings
@@ -93,8 +95,8 @@ async def post_init(application: Application) -> None:
 
         application.job_queue.run_repeating(
             _force_join_periodic_job,
-            interval=6 * 3600,       # every 6 hours
-            first=300,               # first run 5 minutes after startup
+            interval=6 * 3600,
+            first=300,
             name="force_join_periodic_check",
             job_kwargs={"misfire_grace_time": 300, "coalesce": True},
         )
@@ -106,6 +108,56 @@ async def post_init(application: Application) -> None:
 async def post_shutdown(application: Application) -> None:
     await close_db()
     log.info("Database connections closed")
+
+
+async def _global_force_join_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Global gate — runs BEFORE every other handler (group -20).
+
+    Any update from a user who hasn't joined all required channels is blocked
+    here, and the join prompt is sent. Raises ApplicationHandlerStop so no
+    other handler runs for that update.
+
+    Admins bypass. /start, /help, the verify button, and Cancel buttons are
+    allowed through so the user can actually join.
+    """
+    if not settings.FORCE_JOIN_ENABLED:
+        return
+
+    user = update.effective_user
+    if not user:
+        return
+
+    # Admins bypass
+    if user.id in settings.ADMIN_IDS:
+        return
+
+    # Allow-through list (so user can join / abort)
+    if update.message and update.message.text:
+        t = update.message.text.strip()
+        if (
+            t.startswith("/start")
+            or t.startswith("/help")
+            or t in ("🏠 Main Menu", "❌ Cancel", "❌ Cancel Sponsor", "❌ Cancel Admin")
+        ):
+            return
+
+    if update.callback_query:
+        data = update.callback_query.data or ""
+        if data == "force_join_check":
+            return
+
+    # Everything else: check membership
+    try:
+        from middlewares.force_join_middleware import ForceJoinMiddleware
+        passed = await ForceJoinMiddleware.check(update, context)
+        if not passed:
+            raise ApplicationHandlerStop
+    except ApplicationHandlerStop:
+        raise
+    except Exception:
+        # Don't block bot on unexpected errors
+        log.exception("Force-join gate error")
 
 
 def build_application() -> Application:
@@ -121,12 +173,17 @@ def build_application() -> Application:
     app = builder.build()
 
     # ══════════════════════════════════════════════════════════
-    # 0. Chat member leave detection
+    # Chat member leave detection
     # ══════════════════════════════════════════════════════════
     app.add_handler(ChatMemberHandler(
         on_chat_member_update,
         ChatMemberHandler.CHAT_MEMBER,
     ))
+
+    # ══════════════════════════════════════════════════════════
+    # -20. GLOBAL FORCE JOIN GATE — runs before everything
+    # ══════════════════════════════════════════════════════════
+    app.add_handler(TypeHandler(Update, _global_force_join_gate), group=-20)
 
     # ══════════════════════════════════════════════════════════
     # GROUP 0 — all handler registrations
