@@ -9,7 +9,9 @@ from telegram.ext import (
     Application, ApplicationBuilder, CommandHandler,
     MessageHandler, CallbackQueryHandler, filters,
     ContextTypes,
+    ChatMemberHandler,
 )
+
 from config import settings
 from database import init_db, close_db
 
@@ -25,6 +27,7 @@ from handlers.live_payments import handle_live_payments
 from handlers.promotion import handle_promotion
 from handlers.support import support_conv_handler
 from handlers.force_join import handle_force_join_check
+from handlers.chat_member import on_chat_member_update
 
 from admin.panel import (
     admin_panel_handler, admin_callback_handler,
@@ -35,6 +38,7 @@ from admin.panel import (
     admin_settings_reply, admin_fraud_reply, admin_audit_reply,
     admin_back_reply, admin_close_reply, admin_cancel_reply,
     admin_text_input_dispatcher,
+    admin_force_join_reply,
 )
 from sponsor.panel import (
     sponsor_panel_handler, sponsor_callback_handler,
@@ -97,15 +101,23 @@ def build_application() -> Application:
     app = builder.build()
 
     # ══════════════════════════════════════════════════════════
-    # GROUP 0 — সব হ্যান্ডলার এই একই group-এ, ক্রম গুরুত্বপূর্ণ
+    # 0. Chat member leave detection
+    # ══════════════════════════════════════════════════════════
+    app.add_handler(ChatMemberHandler(
+        on_chat_member_update,
+        ChatMemberHandler.CHAT_MEMBER,
+    ))
+
+    # ══════════════════════════════════════════════════════════
+    # GROUP 0 — all handler registrations
     # ══════════════════════════════════════════════════════════
 
-    # 1. Conversation handlers (must be first)
+    # 1. Conversation handlers
     app.add_handler(profile_conv_handler())
     app.add_handler(withdraw_conv_handler())
     app.add_handler(support_conv_handler())
 
-    # 2. Command handlers
+    # 2. Commands
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("profile", handle_profile))
@@ -116,7 +128,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("admin", admin_panel_handler))
     app.add_handler(CommandHandler("sponsor", sponsor_panel_handler))
 
-    # 3. SPONSOR reply keyboard — FIRST (must be before admin)
+    # 3. SPONSOR reply keyboard
     app.add_handler(MessageHandler(filters.Regex(r"Sponsor Panel$"), sponsor_panel_reply_handler))
     app.add_handler(MessageHandler(filters.Regex(r"Create Campaign$"), sponsor_create_campaign_reply))
     app.add_handler(MessageHandler(filters.Regex(r"My Campaigns$"), sponsor_my_campaigns_reply))
@@ -135,7 +147,7 @@ def build_application() -> Application:
     ))
     app.add_handler(MessageHandler(filters.Regex(r"Cancel Sponsor$"), sponsor_cancel_reply))
 
-    # 4. ADMIN reply keyboard — AFTER sponsor
+    # 4. ADMIN reply keyboard
     app.add_handler(MessageHandler(filters.Regex(r"Users$"), admin_users_reply))
     app.add_handler(MessageHandler(filters.Regex(r"Campaigns$"), admin_campaigns_reply))
     app.add_handler(MessageHandler(filters.Regex(r"Sponsors$"), admin_sponsors_reply))
@@ -144,6 +156,7 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.Regex(r"Referrals$"), admin_referrals_reply))
     app.add_handler(MessageHandler(filters.Regex(r"Admin Stats$"), admin_stats_reply))
     app.add_handler(MessageHandler(filters.Regex(r"Broadcast$"), admin_broadcast_reply))
+    app.add_handler(MessageHandler(filters.Regex(r"Force Join$"), admin_force_join_reply))
     app.add_handler(MessageHandler(filters.Regex(r"Banned Users$"), admin_banned_reply))
     app.add_handler(MessageHandler(filters.Regex(r"Settings$"), admin_settings_reply))
     app.add_handler(MessageHandler(filters.Regex(r"Fraud Monitor$"), admin_fraud_reply))
@@ -162,22 +175,18 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.Regex(r"Promotion$"), handle_promotion))
     app.add_handler(MessageHandler(filters.Regex(r"Support$"), handle_support_menu))
 
-    # 6. Navigation buttons
+    # 6. Navigation
     app.add_handler(MessageHandler(filters.Regex(r"Main Menu$"), handle_main_menu))
     app.add_handler(MessageHandler(filters.Regex(r"^Cancel$"), handle_user_cancel))
 
     # ══════════════════════════════════════════════════════════
-    # 7. COMBINED free-text dispatcher — MUST be last in group 0
-    #    Because PTB runs the FIRST matching handler in a group
-    #    and skips the rest, this will only run when NO button
-    #    regex matched — i.e. user actually typed free text.
+    # 7. COMBINED free-text dispatcher — last in group 0
     # ══════════════════════════════════════════════════════════
     async def _combined_text_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message or not update.message.text:
             return
         text = update.message.text
 
-        # /cancel shortcut
         if text.lower() in ("/cancel", "cancel"):
             has_state = any(
                 context.user_data.get(k) for k in (
@@ -185,6 +194,7 @@ def build_application() -> Application:
                     "admin_awaiting_user_balance",
                     "admin_awaiting_user_search",
                     "admin_awaiting_broadcast",
+                    "admin_awaiting_fj_add",
                     "sponsor_step",
                 )
             )
@@ -193,18 +203,17 @@ def build_application() -> Application:
                 await update.message.reply_text("❌ Cancelled.")
                 return
 
-        # Admin states take priority
         if settings.is_admin(update.effective_user.id):
             if any([
                 context.user_data.get("admin_awaiting_sponsor_balance"),
                 context.user_data.get("admin_awaiting_user_balance"),
                 context.user_data.get("admin_awaiting_user_search"),
                 context.user_data.get("admin_awaiting_broadcast"),
+                context.user_data.get("admin_awaiting_fj_add"),
             ]):
                 await admin_text_input_dispatcher(update, context)
                 return
 
-        # Sponsor wizard states
         if context.user_data.get("sponsor_step"):
             await sponsor_text_input_handler(update, context)
             return
@@ -215,8 +224,9 @@ def build_application() -> Application:
     ))
 
     # ══════════════════════════════════════════════════════════
-    # Callback handlers (Inline keyboards)
+    # Callback handlers
     # ══════════════════════════════════════════════════════════
+    app.add_handler(CallbackQueryHandler(handle_force_join_check, pattern=r"^force_join_check$"))
     app.add_handler(CallbackQueryHandler(handle_task_done, pattern=r"^task_done:\d+$"))
     app.add_handler(CallbackQueryHandler(handle_task_skip, pattern=r"^task_skip:\d+$"))
     app.add_handler(CallbackQueryHandler(handle_task_next, pattern=r"^task_next$"))
