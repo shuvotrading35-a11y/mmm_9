@@ -1407,7 +1407,7 @@ async def _admin_flagged_list(query) -> None:
     )
 
 
-# ══════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════# ══════════════════════════════════════════════════════════════════
 # Action handlers
 # ══════════════════════════════════════════════════════════════════
 
@@ -1565,49 +1565,105 @@ async def _admin_approve_sponsor(query, sponsor_id: int, admin_id: int) -> None:
 
 
 async def _admin_reject_sponsor(query, sponsor_id: int, admin_id: int) -> None:
-    async with get_session() as session:
-        async with session.begin():
-            from models.sponsor import Sponsor, SponsorStatus
-            from models.audit_log import AuditLog
+    try:
+        async with get_session() as session:
+            async with session.begin():
+                from models.sponsor import Sponsor, SponsorStatus
+                from models.audit_log import AuditLog
 
-            sponsor = await session.get(Sponsor, sponsor_id)
-            if sponsor:
+                sponsor = await session.get(Sponsor, sponsor_id)
+                if not sponsor:
+                    await _safe_edit(query, "❌ Sponsor not found.")
+                    return
+
+                old_status = _enum_str(sponsor.status)
                 # Prefer REJECTED; fall back to SUSPENDED if enum lacks REJECTED
                 target = getattr(SponsorStatus, "REJECTED", None) or \
                          getattr(SponsorStatus, "SUSPENDED", None)
                 if target is not None:
                     sponsor.status = target
 
-            session.add(AuditLog(
-                admin_id=admin_id,
-                action="REJECT_SPONSOR",
-                target_type="sponsor",
-                target_id=sponsor_id,
-            ))
+                sponsor_user_id = sponsor.user_id
 
-    await _safe_edit(query, f"❌ Sponsor #{sponsor_id} rejected.")
+                session.add(AuditLog(
+                    admin_id=admin_id,
+                    action="REJECT_SPONSOR",
+                    target_type="sponsor",
+                    target_id=sponsor_id,
+                    old_value={"status": old_status},
+                    new_value={"status": "REJECTED"},
+                ))
+
+        # Notify sponsor
+        from services.notification_service import NotificationService
+        asyncio.create_task(
+            NotificationService.send_to_user(
+                sponsor_user_id,
+                "❌ <b>Sponsor Application Rejected</b>\n\n"
+                "Your sponsor application was not approved.\n\n"
+                "Contact support for more details.",
+            )
+        )
+
+        await _safe_edit(
+            query,
+            f"❌ Sponsor #{sponsor_id} rejected.",
+            reply_markup=sponsor_action_keyboard(sponsor_id, "REJECTED"),
+        )
+    except Exception as e:
+        log.exception("Reject sponsor failed", sponsor_id=sponsor_id)
+        await _safe_edit(query, f"❌ {str(e)[:200]}")
 
 
 async def _admin_suspend_sponsor(query, sponsor_id: int, admin_id: int) -> None:
-    async with get_session() as session:
-        async with session.begin():
-            from models.sponsor import Sponsor, SponsorStatus
-            from models.audit_log import AuditLog
+    try:
+        async with get_session() as session:
+            async with session.begin():
+                from models.sponsor import Sponsor, SponsorStatus
+                from models.audit_log import AuditLog
 
-            sponsor = await session.get(Sponsor, sponsor_id)
-            if sponsor:
+                sponsor = await session.get(Sponsor, sponsor_id)
+                if not sponsor:
+                    await _safe_edit(query, "❌ Sponsor not found.")
+                    return
+
+                old_status = _enum_str(sponsor.status)
                 target = getattr(SponsorStatus, "SUSPENDED", None) or \
                          getattr(SponsorStatus, "PENDING")
                 sponsor.status = target
 
-            session.add(AuditLog(
-                admin_id=admin_id,
-                action="SUSPEND_SPONSOR",
-                target_type="sponsor",
-                target_id=sponsor_id,
-            ))
+                sponsor_user_id = sponsor.user_id
 
-    await _safe_edit(query, f"🚫 Sponsor #{sponsor_id} suspended.")
+                session.add(AuditLog(
+                    admin_id=admin_id,
+                    action="SUSPEND_SPONSOR",
+                    target_type="sponsor",
+                    target_id=sponsor_id,
+                    old_value={"status": old_status},
+                    new_value={"status": "SUSPENDED"},
+                ))
+
+        # Notify sponsor
+        from services.notification_service import NotificationService
+        asyncio.create_task(
+            NotificationService.send_to_user(
+                sponsor_user_id,
+                "🚫 <b>Sponsor Account Suspended</b>\n\n"
+                "Your sponsor account has been suspended by an admin.\n\n"
+                "You cannot create or fund new campaigns right now.\n"
+                "Active campaigns remain running.\n\n"
+                "Contact support if you believe this is a mistake.",
+            )
+        )
+
+        await _safe_edit(
+            query,
+            f"🚫 Sponsor #{sponsor_id} suspended.",
+            reply_markup=sponsor_action_keyboard(sponsor_id, "SUSPENDED"),
+        )
+    except Exception as e:
+        log.exception("Suspend sponsor failed", sponsor_id=sponsor_id)
+        await _safe_edit(query, f"❌ {str(e)[:200]}")
 
 
 async def _admin_activate_sponsor(query, sponsor_id: int, admin_id: int) -> None:
@@ -1706,8 +1762,6 @@ async def _admin_reject_withdrawal(query, withdrawal_id: int, admin_id: int) -> 
     except Exception as e:
         log.exception("Reject withdrawal failed", withdrawal_id=withdrawal_id)
         await _safe_edit(query, f"❌ {str(e)[:200]}")
-
-
 # ══════════════════════════════════════════════════════════════════
 # Deposit approve / reject
 # ══════════════════════════════════════════════════════════════════
