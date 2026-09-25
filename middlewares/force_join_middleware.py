@@ -15,17 +15,16 @@ log = structlog.get_logger(__name__)
 class ForceJoinMiddleware:
 
     # In-memory rate limit: user_id → last prompt time (unix seconds)
-    # Prevents spamming the same user across rapid button presses.
     _last_prompt: dict = {}
 
-    # How long to suppress duplicate prompts (seconds)
-    _COOLDOWN = 3
+    # How long to suppress duplicate full prompts (seconds)
+    _COOLDOWN = 1
 
     @staticmethod
     async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
         """
         Returns True if user passes force-join check (or feature is disabled).
-        Returns False if user must join channels first (prompt sent).
+        Returns False if user must join channels first.
         """
         # Feature toggle
         if not settings.FORCE_JOIN_ENABLED:
@@ -55,7 +54,7 @@ class ForceJoinMiddleware:
             )
 
         if all_joined:
-            # Clear any stale cooldown so a future leave triggers prompt instantly
+            # Clear cooldown so a future leave triggers prompt instantly
             ForceJoinMiddleware._last_prompt.pop(user.id, None)
             return True
 
@@ -63,12 +62,23 @@ class ForceJoinMiddleware:
         now = time.time()
         last = ForceJoinMiddleware._last_prompt.get(user.id, 0)
         if now - last < ForceJoinMiddleware._COOLDOWN:
-            # Already prompted recently — silently block
+            # Already prompted recently — give quick feedback so the
+            # button doesn't feel "stuck". For callback queries we can
+            # show a small toast; for plain text we stay silent (the
+            # previous prompt message is still visible above).
+            try:
+                if update.callback_query:
+                    await update.callback_query.answer(
+                        "⚠️ Please join our channel first!",
+                        show_alert=False,
+                    )
+            except Exception:
+                pass
             return False
 
         ForceJoinMiddleware._last_prompt[user.id] = now
 
-        # Build prompt
+        # Build full prompt
         keyboard = ForceJoinService.build_join_keyboard(missing)
         msg = (
             "📢 <b>Join Required</b>\n\n"
@@ -82,15 +92,13 @@ class ForceJoinMiddleware:
                     msg, parse_mode="HTML", reply_markup=keyboard
                 )
             elif update.callback_query:
-                await update.callback_query.answer(
-                    "Please join our channel first!", show_alert=True
-                )
-                # Edit the original message if possible, otherwise send new
+                # For callbacks, try to edit in place first
                 try:
                     await update.callback_query.edit_message_text(
                         msg, parse_mode="HTML", reply_markup=keyboard
                     )
                 except Exception:
+                    # Fallback: send a fresh message
                     await update.callback_query.message.reply_text(
                         msg, parse_mode="HTML", reply_markup=keyboard
                     )
