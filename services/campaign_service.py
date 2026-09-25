@@ -1,6 +1,8 @@
 """
 Campaign Service — campaign lifecycle, funding, and analytics.
 """
+import asyncio
+import hashlib
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Optional, List
@@ -91,8 +93,8 @@ class CampaignService:
             budget=str(total_budget),
         )
 
+        # Notify admins (fire-and-forget)
         from services.notification_service import NotificationService
-        import asyncio
         asyncio.create_task(
             NotificationService.notify_admin_new_campaign(
                 campaign.id, title, sponsor_id
@@ -125,15 +127,15 @@ class CampaignService:
         campaign.approved_by = admin_id
         campaign.approved_at = datetime.now(tz=timezone.utc)
 
-        # ── session-এর ভিতরেই sponsor info বের করে নেওয়া (lazy load এড়াতে) ──
+        # Snapshot inside session
         sponsor_user_id = campaign.sponsor.user_id
         campaign_title = campaign.title
         campaign_id_val = campaign.id
 
         await session.flush()
 
+        # Notify sponsor (fire-and-forget)
         from services.notification_service import NotificationService
-        import asyncio
         asyncio.create_task(
             NotificationService.campaign_approved(sponsor_user_id, campaign_title)
         )
@@ -156,10 +158,9 @@ class CampaignService:
         Sponsor funds campaign from available_balance.
         Moves funds to reserved_balance and sets campaign ACTIVE.
         """
-        import hashlib
-
         result = await session.execute(
             select(Campaign)
+            .options(selectinload(Campaign.sponsor))     # ← for notify
             .where(Campaign.id == campaign_id)
             .with_for_update(nowait=True)
         )
@@ -194,7 +195,20 @@ class CampaignService:
 
         campaign.reserved_budget = required
         campaign.status = CampaignStatus.ACTIVE
+
+        # Snapshot inside session
+        sponsor_user_id = campaign.sponsor.user_id
+        campaign_title = campaign.title
+
         await session.flush()
+
+        # Notify sponsor (fire-and-forget)
+        from services.notification_service import NotificationService
+        asyncio.create_task(
+            NotificationService.campaign_funded(
+                sponsor_user_id, campaign_title, str(required)
+            )
+        )
 
         log.info(
             "Campaign funded and activated",
@@ -239,11 +253,15 @@ class CampaignService:
     async def expire_overdue_campaigns(session: AsyncSession) -> int:
         """
         Background job: expire campaigns past their expiry date.
-        Releases unused budget back to sponsor.
+        Releases unused budget back to sponsor and notifies them.
         """
         now = datetime.now(tz=timezone.utc)
+
+        # Eager-load sponsor so we can notify without lazy loads
         result = await session.execute(
-            select(Campaign).where(
+            select(Campaign)
+            .options(selectinload(Campaign.sponsor))
+            .where(
                 Campaign.status.in_([CampaignStatus.ACTIVE, CampaignStatus.PAUSED]),
                 Campaign.expires_at < now,
             )
@@ -252,12 +270,13 @@ class CampaignService:
         expired_count = 0
 
         for campaign in campaigns:
-            import hashlib
             release_key = hashlib.sha256(
                 f"expire_release:{campaign.id}:{settings.SECRET_SALT}".encode()
             ).hexdigest()
 
-            unused = campaign.reserved_budget
+            unused = campaign.reserved_budget or Decimal("0")
+            released = Decimal("0")
+
             if unused > Decimal("0"):
                 try:
                     await LedgerService.release_campaign_budget(
@@ -268,6 +287,7 @@ class CampaignService:
                         idempotency_key=release_key,
                         description=f"Budget release: expired campaign #{campaign.id}",
                     )
+                    released = unused
                 except Exception as e:
                     log.error(
                         "Failed to release expired campaign budget",
@@ -275,10 +295,24 @@ class CampaignService:
                         error=str(e),
                     )
 
+            # Snapshot before mutating
+            sponsor_user_id = campaign.sponsor.user_id
+            campaign_title = campaign.title
+            campaign_id_val = campaign.id
+
             campaign.status = CampaignStatus.EXPIRED
             campaign.reserved_budget = Decimal("0")
             expired_count += 1
-            log.info("Campaign expired", campaign_id=campaign.id)
+
+            log.info("Campaign expired", campaign_id=campaign_id_val)
+
+            # Notify sponsor (fire-and-forget)
+            from services.notification_service import NotificationService
+            asyncio.create_task(
+                NotificationService.campaign_expired(
+                    sponsor_user_id, campaign_title, str(released)
+                )
+            )
 
         await session.flush()
         return expired_count
@@ -336,12 +370,14 @@ class CampaignService:
         Delete a campaign. If it has reserved budget, release it back to the sponsor.
         Returns a summary dict with 'released' amount.
         """
-        import hashlib
         from models.task_completion import TaskCompletion
         from models.task_skip import TaskSkip
 
+        # Eager-load sponsor to fetch user_id for notifications
         result = await session.execute(
-            select(Campaign).where(Campaign.id == campaign_id)
+            select(Campaign)
+            .options(selectinload(Campaign.sponsor))
+            .where(Campaign.id == campaign_id)
         )
         campaign = result.scalar_one_or_none()
         if not campaign:
@@ -384,6 +420,16 @@ class CampaignService:
                     error=str(e),
                 )
 
+        # Snapshot before deletion
+        summary = {
+            "id": campaign.id,
+            "title": campaign.title,
+            "sponsor_id": campaign.sponsor_id,
+            "sponsor_user_id": campaign.sponsor.user_id,
+            "status": status_str,
+            "released": released,
+        }
+
         # Delete related rows to avoid FK violations
         await session.execute(
             sa_delete(TaskCompletion).where(TaskCompletion.campaign_id == campaign_id)
@@ -391,15 +437,6 @@ class CampaignService:
         await session.execute(
             sa_delete(TaskSkip).where(TaskSkip.campaign_id == campaign_id)
         )
-
-        # Snapshot info before deleting
-        summary = {
-            "id": campaign.id,
-            "title": campaign.title,
-            "sponsor_id": campaign.sponsor_id,
-            "status": status_str,
-            "released": released,
-        }
 
         await session.delete(campaign)
         await session.flush()
@@ -411,5 +448,20 @@ class CampaignService:
             admin=actor_is_admin,
             released=str(released),
         )
+
+        # Notify sponsor if an admin deleted their campaign
+        if actor_is_admin:
+            from services.notification_service import NotificationService
+            asyncio.create_task(
+                NotificationService.send_to_user(
+                    summary["sponsor_user_id"],
+                    f"🗑 <b>Campaign Deleted by Admin</b>\n\n"
+                    f"📝 <b>{summary['title']}</b>\n"
+                    + (
+                        f"💰 Refunded to your balance: <b>{released} USDT</b>"
+                        if released > Decimal("0") else ""
+                    ),
+                )
+            )
 
         return summary
