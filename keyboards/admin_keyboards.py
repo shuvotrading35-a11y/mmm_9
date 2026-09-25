@@ -35,11 +35,14 @@ def admin_main_reply_keyboard() -> ReplyKeyboardMarkup:
                 KeyboardButton("📢 Broadcast", style="primary"),
             ],
             [
+                KeyboardButton("📢 Force Join", style="primary"),
                 KeyboardButton("🚫 Banned Users", style="danger"),
-                KeyboardButton("⚙️ Settings", style="primary"),
             ],
             [
+                KeyboardButton("⚙️ Settings", style="primary"),
                 KeyboardButton("🛡 Fraud Monitor", style="danger"),
+            ],
+            [
                 KeyboardButton("📜 Audit Logs"),
             ],
             [
@@ -181,3 +184,55 @@ def deposit_action_keyboard(deposit_id: int, status: str) -> InlineKeyboardMarku
     buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin:deposits")])
 
     return InlineKeyboardMarkup(buttons)
+
+
+# ══════════════════════════════════════════════════════════════════
+# Force Join channel management
+# ══════════════════════════════════════════════════════════════════
+
+def force_join_manage_keyboard(channels: list) -> InlineKeyboardMarkup:
+    """List all force-join channels with per-item delete buttons."""
+    buttons = []
+    for ch in channels:
+        status_icon = "✅" if ch.get("is_active") else "⏸"
+        label = (
+            ch.get("title")
+            or ch.get("username")
+            or str(ch.get("chat_id"))
+        )
+        buttons.append([
+            InlineKeyboardButton(
+                f"{status_icon} {label[:30]}",
+                callback_data=f"admin:fj_view:{ch['id']}",
+            ),
+            InlineKeyboardButton(
+                "🗑",
+                callback_data=f"admin:fj_delete:{ch['id']}",
+            ),
+        ])
+
+    buttons.append([InlineKeyboardButton(
+        "➕ Add Channel",
+        callback_data="admin:fj_add",
+    )])
+    buttons.append([InlineKeyboardButton(
+        "🔙 Back to Admin Panel",
+        callback_data="admin:back",
+    )])
+
+    return InlineKeyboardMarkup(buttons)
+
+
+def force_join_confirm_delete_keyboard(channel_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "✅ Yes, Delete",
+                callback_data=f"admin:fj_delete_confirm:{channel_id}",
+            ),
+            InlineKeyboardButton(
+                "❌ Cancel",
+                callback_data=f"admin:fj_view:{channel_id}",
+            ),
+        ],
+    ])
