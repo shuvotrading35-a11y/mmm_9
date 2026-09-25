@@ -1,12 +1,13 @@
 """
 User Service — registration, profile management, referral chain setup.
 """
+import asyncio
 import secrets
 import string
-from typing import Optional, Tuple          # <-- Tuple যোগ করলাম
+from typing import Optional, Tuple
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, func as sa_func
 from sqlalchemy.ext.asyncio import AsyncSession
 from telegram import User as TGUser
 
@@ -15,6 +16,7 @@ from models.referral import Referral
 from models.user import User, UserStatus
 
 log = structlog.get_logger(__name__)
+
 
 def _generate_referral_code(user_id: int) -> str:
     """Generate a unique referral code for a user."""
@@ -35,11 +37,10 @@ class UserService:
         Get existing user or create new one.
         Returns (user, is_new).
         """
-        from typing import Tuple
-
         user = await session.get(User, tg_user.id)
+
+        # ── Existing user: refresh profile ──
         if user:
-            # Update profile data
             user.username = tg_user.username
             user.first_name = tg_user.first_name
             user.last_name = tg_user.last_name
@@ -48,7 +49,7 @@ class UserService:
             await session.flush()
             return user, False
 
-        # Resolve referrer
+        # ── Resolve referrer ──
         referrer_id: Optional[int] = None
         if referrer_code:
             result = await session.execute(
@@ -58,7 +59,7 @@ class UserService:
             if found_id and found_id != tg_user.id:
                 referrer_id = found_id
 
-        # Create new user
+        # ── Create new user ──
         referral_code = _generate_referral_code(tg_user.id)
         user = User(
             id=tg_user.id,
@@ -72,7 +73,38 @@ class UserService:
         session.add(user)
         await session.flush()
 
-        # Create referral record and pay reward
+        # ── Notify admins of new registration ──
+        try:
+            total_users = (await session.execute(
+                select(sa_func.count(User.id))
+            )).scalar()
+
+            _new_user_id = tg_user.id
+            _new_username = tg_user.username
+            _new_first = tg_user.first_name
+            _new_last = tg_user.last_name
+            _new_referrer = referrer_id
+            _total = total_users
+            _lang = getattr(tg_user, "language_code", None)
+            _premium = bool(getattr(tg_user, "is_premium", False))
+
+            from services.notification_service import NotificationService
+            asyncio.create_task(
+                NotificationService.notify_admin_new_user(
+                    user_id=_new_user_id,
+                    username=_new_username,
+                    first_name=_new_first,
+                    last_name=_new_last,
+                    referrer_id=_new_referrer,
+                    total_users=_total,
+                    language_code=_lang,
+                    is_premium=_premium,
+                )
+            )
+        except Exception:
+            log.exception("Failed to notify admins of new user")
+
+        # ── Create referral record + pay reward ──
         if referrer_id:
             referral = Referral(
                 referrer_id=referrer_id,
@@ -81,9 +113,6 @@ class UserService:
             session.add(referral)
             await session.flush()
 
-            # Pay referral signup reward
-            from services.reward_service import RewardService
-            import asyncio
             asyncio.create_task(
                 UserService._pay_referral_reward_async(referrer_id, tg_user.id)
             )
@@ -112,7 +141,7 @@ class UserService:
             # Notify referrer
             from services.notification_service import NotificationService
             await NotificationService.referral_joined(
-                referrer_id, settings.REFERRAL_REWARD
+                referrer_id, str(settings.REFERRAL_REWARD)
             )
         except Exception as e:
             log.error("Referral reward payment failed", error=str(e))
@@ -143,16 +172,11 @@ class UserService:
 
         checksummed = checksum_address(wallet_address)
 
-        # Check for duplicate wallet (fraud check)
-        from services.fraud_service import FraudService
-        from database import get_session as gs
-
         user = await session.get(User, user_id)
         if user:
             user.bsc_wallet = checksummed
             await session.flush()
 
-            # Record in wallets table for duplicate detection
             from models.wallet import Wallet
             wallet = Wallet(
                 user_id=user_id,
@@ -167,9 +191,6 @@ class UserService:
         session: AsyncSession, user_id: int
     ) -> dict:
         """Get referral statistics for a user."""
-        from models.referral import Referral
-        from sqlalchemy import func as sa_func
-
         result = await session.execute(
             select(
                 sa_func.count(Referral.id).label("total"),
