@@ -30,7 +30,11 @@ def _build_task_text(campaign) -> str:
         TaskType.CUSTOM: "Custom Task",
     }.get(campaign.task_type, "Complete Task")
 
-    target = f"@{campaign.telegram_username}" if campaign.telegram_username else f"ID: {campaign.telegram_chat_id}"
+    target = (
+        f"@{campaign.telegram_username}"
+        if campaign.telegram_username
+        else f"ID: {campaign.telegram_chat_id}"
+    )
     budget_remaining = campaign.total_budget - campaign.spent_budget
 
     return (
@@ -49,12 +53,15 @@ def _build_task_text(campaign) -> str:
 async def handle_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show the next available task to the user."""
     user = update.effective_user
-    message = update.message or update.callback_query.message
+
+    # Determine how to respond
+    is_message = bool(update.message)
+    message_target = update.message or update.callback_query.message
 
     async with get_session() as session:
         # Force-join check
-        from middlewares.force_join_middleware import ForceJoinMiddleware
-        if update.message:
+        if is_message:
+            from middlewares.force_join_middleware import ForceJoinMiddleware
             passed = await ForceJoinMiddleware.check(update, context)
             if not passed:
                 return
@@ -65,11 +72,11 @@ async def handle_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
 
         campaign = await TaskService.get_next_task(session, user.id)
-        if not campaign:
-            count = 0
-        else:
+        if campaign:
             await TaskService.record_view(session, campaign.id)
             count = await TaskService.get_available_tasks_count(session, user.id)
+        else:
+            count = 0
 
     if not campaign:
         text = (
@@ -77,10 +84,13 @@ async def handle_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "You've completed all available tasks or there are no active campaigns right now.\n\n"
             "Check back later — new tasks are added regularly! 🚀"
         )
-        if update.message:
+        if is_message:
             await update.message.reply_text(text, parse_mode="HTML")
         else:
-            await update.callback_query.edit_message_text(text, parse_mode="HTML")
+            try:
+                await update.callback_query.edit_message_text(text, parse_mode="HTML")
+            except Exception:
+                await update.callback_query.message.reply_text(text, parse_mode="HTML")
         return
 
     # Build join URL
@@ -100,10 +110,18 @@ async def handle_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         else task_no_join_keyboard(campaign.id)
     )
 
-    if update.message:
+    if is_message:
         await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
     else:
-        await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+        try:
+            await update.callback_query.edit_message_text(
+                text, parse_mode="HTML", reply_markup=keyboard
+            )
+        except Exception:
+            # Fallback if edit fails (e.g. same content)
+            await update.callback_query.message.reply_text(
+                text, parse_mode="HTML", reply_markup=keyboard
+            )
 
 
 async def handle_task_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -145,15 +163,19 @@ async def handle_task_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         elif reason in (FailureReason.USER_BANNED, FailureReason.USER_RESTRICTED):
             msg = "🚫 Your account is restricted from completing tasks."
         else:
-            msg = f"❌ Verification failed: {verification.error_message}"
+            err = getattr(verification, "error_message", None) or "Unknown error"
+            msg = f"❌ Verification failed: {err}"
 
         # Record failed verify for analytics
         if reason == FailureReason.NOT_MEMBER:
             async with get_session() as session:
-                async with session.begin():
-                    await TaskService.record_failed_verify(session, campaign_id)
+                await TaskService.record_failed_verify(session, campaign_id)
+                await session.commit()
 
-        await query.edit_message_text(msg, parse_mode="HTML")
+        try:
+            await query.edit_message_text(msg, parse_mode="HTML")
+        except Exception:
+            await query.message.reply_text(msg, parse_mode="HTML")
         return
 
     # Execute reward atomically
@@ -167,40 +189,81 @@ async def handle_task_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                     verification_result=verification,
                 )
 
-                # Get updated balance
                 from models.user import User
                 db_user = await session.get(User, user.id)
                 new_balance = db_user.balance
                 reward_amount = completion.reward_amount
 
-                # Pay referral commission (non-blocking)
-                asyncio.create_task(
-                    RewardService.pay_referral_commission(
-                        session=session,
-                        referred_user_id=user.id,
-                        campaign_id=campaign_id,
-                        task_reward_amount=reward_amount,
-                    )
-                )
+                # Snapshot for post-commit use
+                _user_id = user.id
+                _campaign_id = campaign_id
+                _reward = reward_amount
+                _balance = new_balance
 
-        # Notify user
+        # Notify user via separate message
         asyncio.create_task(
-            NotificationService.task_reward_earned(user.id, reward_amount, new_balance)
+            NotificationService.task_reward_earned(
+                user_id=_user_id,
+                amount=_reward,
+                new_balance=_balance,
+            )
+        )
+
+        # Pay referral commission — separate task with its own session
+        asyncio.create_task(
+            _pay_referral_commission_task(
+                referred_user_id=_user_id,
+                campaign_id=_campaign_id,
+                task_reward_amount=_reward,
+            )
         )
 
         await query.edit_message_text(
             f"✅ <b>Task Completed!</b>\n\n"
-            f"🎁 You earned: <b>{fmt_usdt(reward_amount)} USDT</b>\n"
-            f"💰 New Balance: <b>{fmt_usdt(new_balance)} USDT</b>\n\n"
+            f"🎁 You earned: <b>{fmt_usdt(_reward)} USDT</b>\n"
+            f"💰 New Balance: <b>{fmt_usdt(_balance)} USDT</b>\n\n"
             f"Use /tasks to find more tasks!",
             parse_mode="HTML",
         )
 
     except Exception as e:
-        log.error("Reward execution failed", user_id=user.id, campaign_id=campaign_id, error=str(e))
-        await query.edit_message_text(
-            "❌ An error occurred while processing your reward. Please try again.",
-            parse_mode="HTML",
+        log.error(
+            "Reward execution failed",
+            user_id=user.id,
+            campaign_id=campaign_id,
+            error=str(e),
+        )
+        try:
+            await query.edit_message_text(
+                "❌ An error occurred while processing your reward. Please try again.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+
+async def _pay_referral_commission_task(
+    referred_user_id: int,
+    campaign_id: int,
+    task_reward_amount,
+) -> None:
+    """
+    Runs in its own session — safe to fire-and-forget.
+    """
+    try:
+        async with get_session() as session:
+            async with session.begin():
+                await RewardService.pay_referral_commission(
+                    session=session,
+                    referred_user_id=referred_user_id,
+                    campaign_id=campaign_id,
+                    task_reward_amount=task_reward_amount,
+                )
+    except Exception:
+        log.exception(
+            "Referral commission failed",
+            referred_user_id=referred_user_id,
+            campaign_id=campaign_id,
         )
 
 
@@ -212,10 +275,10 @@ async def handle_task_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     campaign_id = int(query.data.split(":")[1])
 
     async with get_session() as session:
-        async with session.begin():
-            await TaskService.record_skip(session, user.id, campaign_id)
+        await TaskService.record_skip(session, user.id, campaign_id)
+        await session.commit()
 
-    await query.edit_message_text("⏭ Task skipped. Use the button below for the next task.")
+    # Show next task — this will overwrite the current message
     await handle_tasks(update, context)
 
 
