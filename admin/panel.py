@@ -25,6 +25,8 @@ from keyboards.admin_keyboards import (
     withdrawal_action_keyboard,
     sponsor_action_keyboard,
     deposit_action_keyboard,
+    force_join_manage_keyboard,
+    force_join_confirm_delete_keyboard,
 )
 from utils.decimal_utils import fmt_usdt
 from utils.time_utils import fmt_datetime
@@ -111,6 +113,18 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         await _admin_audit(query)
     elif action == "broadcast":
         await _admin_broadcast_prompt(query, context)
+    elif action == "force_join":
+        await _admin_force_join_list(query)
+
+    # ── Force Join branches ──
+    elif action == "fj_add":
+        await _admin_fj_add_prompt(query, context)
+    elif action == "fj_view" and len(parts) > 2:
+        await _admin_fj_view(query, int(parts[2]))
+    elif action == "fj_delete" and len(parts) > 2:
+        await _admin_fj_delete_prompt(query, int(parts[2]))
+    elif action == "fj_delete_confirm" and len(parts) > 2:
+        await _admin_fj_delete_confirm(query, int(parts[2]), user.id)
 
     # ── Views of specific items ──
     elif action == "user_view" and len(parts) > 2:
@@ -176,6 +190,7 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
             parse_mode="HTML",
         )
 
+
 # ══════════════════════════════════════════════════════════════════
 # Reply keyboard handlers
 # ══════════════════════════════════════════════════════════════════
@@ -187,6 +202,50 @@ async def admin_panel_reply_handler(update: Update, context: ContextTypes.DEFAUL
         "🛡 <b>ADMIN PANEL</b>\n\nSelect an option:",
         parse_mode="HTML",
         reply_markup=admin_main_reply_keyboard(),
+    )
+
+
+async def admin_force_join_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """📢 Force Join button — show manage list."""
+    if not _require_admin(update.effective_user.id):
+        return
+
+    async with get_session() as session:
+        from sqlalchemy import select
+        from models.force_join import ForceJoinChannel
+
+        result = await session.execute(
+            select(ForceJoinChannel).order_by(ForceJoinChannel.id.asc())
+        )
+        rows = [
+            {
+                "id": c.id,
+                "chat_id": c.chat_id,
+                "username": c.username,
+                "title": getattr(c, "title", None),
+                "invite_url": c.invite_url,
+                "is_active": c.is_active,
+            }
+            for c in result.scalars().all()
+        ]
+
+    if not rows:
+        text = (
+            "📢 <b>FORCE JOIN CHANNELS</b>\n\n"
+            "No channels configured.\n\n"
+            "Tap ➕ Add Channel to add one."
+        )
+    else:
+        text = (
+            f"📢 <b>FORCE JOIN CHANNELS</b>\n\n"
+            f"Total: <b>{len(rows)}</b>\n\n"
+            f"Tap a channel to view or delete."
+        )
+
+    await update.message.reply_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=force_join_manage_keyboard(rows),
     )
 
 
@@ -277,7 +336,6 @@ async def admin_sponsors_reply(update: Update, context: ContextTypes.DEFAULT_TYP
         from sqlalchemy import select
         from models.sponsor import Sponsor, SponsorStatus
 
-        # Pending first, then approved, then rest
         pending_result = await session.execute(
             select(Sponsor).where(Sponsor.status == SponsorStatus.PENDING).limit(10)
         )
@@ -608,6 +666,7 @@ async def admin_cancel_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data.pop("admin_awaiting_sponsor_balance", None)
     context.user_data.pop("admin_awaiting_user_search", None)
     context.user_data.pop("admin_awaiting_user_balance", None)
+    context.user_data.pop("admin_awaiting_fj_add", None)
     await update.message.reply_text(
         "❌ Cancelled.",
         reply_markup=admin_main_reply_keyboard(),
@@ -615,8 +674,7 @@ async def admin_cancel_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # ══════════════════════════════════════════════════════════════════
-# Central free-text input dispatcher — one handler to rule them all
-# Register in bot.py BEFORE sponsor_text_input_handler
+# Central free-text input dispatcher
 # ══════════════════════════════════════════════════════════════════
 
 async def admin_text_input_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -657,9 +715,14 @@ async def admin_text_input_dispatcher(update: Update, context: ContextTypes.DEFA
         await _handle_broadcast_input(update, context, text)
         return
 
+    # 5) Force Join channel add
+    if context.user_data.get("admin_awaiting_fj_add"):
+        await _handle_fj_add_input(update, context, text)
+        return
+
 
 # ══════════════════════════════════════════════════════════════════
-# Internal renderers (async — take `query`)
+# Internal renderers
 # ══════════════════════════════════════════════════════════════════
 
 async def _admin_users(query) -> None:
@@ -1469,7 +1532,6 @@ async def _admin_reject_sponsor(query, sponsor_id: int, admin_id: int) -> None:
 
             sponsor = await session.get(Sponsor, sponsor_id)
             if sponsor:
-                # Try REJECTED first, fall back to SUSPENDED
                 target = getattr(
                     type(sponsor.status), "REJECTED",
                     getattr(type(sponsor.status), "SUSPENDED", None)
@@ -1605,7 +1667,6 @@ async def _admin_approve_deposit(query, deposit_id: int, admin_id: int) -> None:
             parse_mode="HTML",
         )
 
-        # Notify sponsor (fire-and-forget)
         asyncio.create_task(_notify_user(
             sponsor_user_id,
             f"✅ <b>Deposit Confirmed</b>\n\n"
@@ -1659,7 +1720,7 @@ async def _admin_reject_deposit(query, deposit_id: int, admin_id: int) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════
-# Sponsor balance add (admin)
+# Sponsor balance add
 # ══════════════════════════════════════════════════════════════════
 
 async def _admin_sponsor_balance_prompt(query, context, sponsor_id: int) -> None:
@@ -1689,7 +1750,6 @@ async def _admin_sponsor_balance_prompt(query, context, sponsor_id: int) -> None
 
 
 async def _handle_sponsor_balance_input(update, context, text: str) -> None:
-    """Called by admin_text_input_dispatcher."""
     try:
         amount = Decimal(text)
         if amount <= 0:
@@ -1764,7 +1824,6 @@ async def _handle_sponsor_balance_input(update, context, text: str) -> None:
 
 
 async def _admin_sponsor_balance_confirm(query, context, sponsor_id: int, admin_id: int) -> None:
-    """Kept as a legacy no-op — the new flow handles confirmation inline."""
     await _safe_edit(query, "⚠️ Use the current flow (send amount directly).")
 
 
@@ -1773,12 +1832,10 @@ async def _admin_sponsor_balance_confirm(query, context, sponsor_id: int, admin_
 # ══════════════════════════════════════════════════════════════════
 
 async def _handle_user_search_input(update, context, text: str) -> None:
-    """Called by admin_text_input_dispatcher."""
     context.user_data.pop("admin_awaiting_user_search", None)
 
     target_id = None
     if text.startswith("@") or not text.isdigit():
-        # Search by username
         async with get_session() as session:
             from sqlalchemy import select
             from models.user import User
@@ -1800,7 +1857,6 @@ async def _handle_user_search_input(update, context, text: str) -> None:
         )
         return
 
-    # Reuse the query-based view via a fake query object
     class _FakeQuery:
         def __init__(self, message):
             self.message = message
@@ -1910,7 +1966,6 @@ async def _handle_user_balance_input(update, context, text: str) -> None:
 
 
 async def _admin_user_balance_confirm(query, context, user_id: int, admin_id: int) -> None:
-    """Legacy no-op — the new flow handles confirmation inline."""
     await _safe_edit(query, "⚠️ Use the current flow (send amount directly).")
 
 
@@ -1951,7 +2006,7 @@ async def _do_broadcast(bot, user_ids, text: str) -> None:
             sent += 1
         except Exception:
             failed += 1
-        await asyncio.sleep(0.05)  # avoid rate limit
+        await asyncio.sleep(0.05)
     log.info("Broadcast finished", sent=sent, failed=failed)
 
 
@@ -1973,13 +2028,16 @@ async def _notify_user(user_id: int, text: str) -> None:
         log.exception("Failed to notify user", user_id=user_id)
 
 
+# ══════════════════════════════════════════════════════════════════
+# Admin campaign delete (force)
+# ══════════════════════════════════════════════════════════════════
 
 async def _admin_delete_campaign(query, campaign_id: int, admin_id: int) -> None:
     """Admin force-delete a campaign."""
     try:
         async with get_session() as session:
             async with session.begin():
-                from services.campaign_service import CampaignService, CampaignValidationError
+                from services.campaign_service import CampaignService
                 from models.audit_log import AuditLog
 
                 summary = await CampaignService.delete_campaign(
@@ -2017,3 +2075,255 @@ async def _admin_delete_campaign(query, campaign_id: int, admin_id: int) -> None
             f"❌ Delete failed: <code>{str(e)[:200]}</code>",
             parse_mode="HTML",
         )
+
+
+# ══════════════════════════════════════════════════════════════════
+# Force Join channel management
+# ══════════════════════════════════════════════════════════════════
+
+async def _admin_force_join_list(query) -> None:
+    async with get_session() as session:
+        from sqlalchemy import select
+        from models.force_join import ForceJoinChannel
+
+        result = await session.execute(
+            select(ForceJoinChannel).order_by(ForceJoinChannel.id.asc())
+        )
+        rows = [
+            {
+                "id": c.id,
+                "chat_id": c.chat_id,
+                "username": c.username,
+                "title": getattr(c, "title", None),
+                "invite_url": c.invite_url,
+                "is_active": c.is_active,
+            }
+            for c in result.scalars().all()
+        ]
+
+    if not rows:
+        text = (
+            "📢 <b>FORCE JOIN CHANNELS</b>\n\n"
+            "No channels configured.\n\n"
+            "Users can freely use the bot."
+        )
+    else:
+        text = (
+            f"📢 <b>FORCE JOIN CHANNELS</b>\n\n"
+            f"Total: <b>{len(rows)}</b>\n\n"
+            f"Tap a channel to view or delete."
+        )
+
+    await _safe_edit(
+        query,
+        text,
+        parse_mode="HTML",
+        reply_markup=force_join_manage_keyboard(rows),
+    )
+
+
+async def _admin_fj_add_prompt(query, context) -> None:
+    context.user_data["admin_awaiting_fj_add"] = True
+    await _safe_edit(
+        query,
+        "➕ <b>ADD FORCE JOIN CHANNEL</b>\n\n"
+        "Send the channel's <b>@username</b> or <b>numeric chat ID</b>.\n\n"
+        "Examples:\n"
+        "<code>@MyChannel</code>\n"
+        "<code>-1001234567890</code>\n\n"
+        "⚠️ Make sure the bot is <b>admin</b> in that channel.\n\n"
+        "Send /cancel to abort.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back", callback_data="admin:force_join")]
+        ]),
+    )
+
+
+async def _handle_fj_add_input(update, context, text: str) -> None:
+    context.user_data.pop("admin_awaiting_fj_add", None)
+
+    raw = text.strip()
+    chat_ref = None
+
+    if raw.startswith("-100") or raw.lstrip("-").isdigit():
+        try:
+            chat_ref = int(raw)
+        except ValueError:
+            await update.message.reply_text("❌ Invalid chat ID.")
+            return
+    elif raw.startswith("@") or raw.startswith("https://t.me/"):
+        chat_ref = raw
+    else:
+        chat_ref = f"@{raw}"
+
+    bot = update.get_bot()
+
+    try:
+        chat = await bot.get_chat(chat_ref)
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Cannot access chat.\n\n"
+            f"Error: <code>{str(e)[:200]}</code>\n\n"
+            f"Make sure the bot is an <b>admin</b> in that channel.",
+            parse_mode="HTML",
+        )
+        return
+
+    chat_id = chat.id
+    username = chat.username
+    title = chat.title or username or str(chat_id)
+    invite_url = f"https://t.me/{username}" if username else None
+
+    try:
+        async with get_session() as session:
+            async with session.begin():
+                from sqlalchemy import select
+                from models.force_join import ForceJoinChannel
+                from models.audit_log import AuditLog
+
+                existing = await session.execute(
+                    select(ForceJoinChannel).where(ForceJoinChannel.chat_id == chat_id)
+                )
+                if existing.scalar_one_or_none():
+                    await update.message.reply_text(
+                        f"⚠️ Channel already added: <b>{title}</b>",
+                        parse_mode="HTML",
+                    )
+                    return
+
+                ch = ForceJoinChannel(
+                    chat_id=chat_id,
+                    username=username,
+                    invite_url=invite_url,
+                    is_active=True,
+                )
+                session.add(ch)
+                await session.flush()
+                new_id = ch.id
+
+                session.add(AuditLog(
+                    admin_id=update.effective_user.id,
+                    action="ADD_FORCE_JOIN",
+                    target_type="force_join",
+                    target_id=new_id,
+                    new_value={
+                        "chat_id": str(chat_id),
+                        "username": username,
+                        "title": title,
+                    },
+                ))
+
+        await update.message.reply_text(
+            f"✅ <b>Force Join Channel Added</b>\n\n"
+            f"📢 <b>{title}</b>\n"
+            f"🆔 <code>{chat_id}</code>\n"
+            f"🔗 @{username or '—'}\n\n"
+            f"Users will now be required to join before using the bot.",
+            parse_mode="HTML",
+            reply_markup=admin_main_reply_keyboard(),
+        )
+    except Exception as e:
+        log.exception("Add force join channel failed")
+        await update.message.reply_text(
+            f"❌ Failed: <code>{str(e)[:200]}</code>",
+            parse_mode="HTML",
+        )
+
+
+async def _admin_fj_view(query, channel_id: int) -> None:
+    async with get_session() as session:
+        from models.force_join import ForceJoinChannel
+        ch = await session.get(ForceJoinChannel, channel_id)
+        if not ch:
+            await _safe_edit(query, "❌ Channel not found.")
+            return
+
+        data = {
+            "id": ch.id,
+            "chat_id": ch.chat_id,
+            "username": ch.username,
+            "invite_url": ch.invite_url,
+            "is_active": ch.is_active,
+            "created_at": ch.created_at,
+        }
+
+    text = (
+        f"📢 <b>FORCE JOIN CHANNEL #{data['id']}</b>\n\n"
+        f"🆔 Chat ID: <code>{data['chat_id']}</code>\n"
+        f"🔗 Username: @{data['username'] or '—'}\n"
+        f"🌐 Invite URL: {data['invite_url'] or '—'}\n"
+        f"📌 Status: <b>{'✅ Active' if data['is_active'] else '⏸ Inactive'}</b>\n"
+        f"📅 Added: {fmt_datetime(data['created_at']) if data['created_at'] else '—'}\n"
+    )
+
+    await _safe_edit(
+        query,
+        text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                "🗑 Delete Channel",
+                callback_data=f"admin:fj_delete:{data['id']}",
+            )],
+            [InlineKeyboardButton("🔙 Back", callback_data="admin:force_join")],
+        ]),
+    )
+
+
+async def _admin_fj_delete_prompt(query, channel_id: int) -> None:
+    async with get_session() as session:
+        from models.force_join import ForceJoinChannel
+        ch = await session.get(ForceJoinChannel, channel_id)
+        if not ch:
+            await _safe_edit(query, "❌ Channel not found.")
+            return
+        label = ch.username or str(ch.chat_id)
+
+    await _safe_edit(
+        query,
+        f"🗑 <b>DELETE CHANNEL?</b>\n\n"
+        f"📢 {label}\n\n"
+        f"Users will no longer be forced to join this channel.\n\n"
+        f"Are you sure?",
+        parse_mode="HTML",
+        reply_markup=force_join_confirm_delete_keyboard(channel_id),
+    )
+
+
+async def _admin_fj_delete_confirm(query, channel_id: int, admin_id: int) -> None:
+    try:
+        async with get_session() as session:
+            async with session.begin():
+                from models.force_join import ForceJoinChannel
+                from models.audit_log import AuditLog
+
+                ch = await session.get(ForceJoinChannel, channel_id)
+                if not ch:
+                    await _safe_edit(query, "❌ Channel not found.")
+                    return
+
+                label = ch.username or str(ch.chat_id)
+                chat_id_val = ch.chat_id
+                username_val = ch.username
+                await session.delete(ch)
+
+                session.add(AuditLog(
+                    admin_id=admin_id,
+                    action="DELETE_FORCE_JOIN",
+                    target_type="force_join",
+                    target_id=channel_id,
+                    old_value={"chat_id": str(chat_id_val), "username": username_val},
+                ))
+
+        await _safe_edit(
+            query,
+            f"✅ <b>Channel Deleted</b>\n\n📢 {label}",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Back to List", callback_data="admin:force_join")]
+            ]),
+        )
+    except Exception as e:
+        log.exception("Delete force join channel failed", channel_id=channel_id)
+        await _safe_edit(query, f"❌ Failed: <code>{str(e)[:200]}</code>", parse_mode="HTML")
