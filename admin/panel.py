@@ -171,6 +171,8 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         await _admin_reject_sponsor(query, int(parts[2]), user.id)
     elif action.startswith("sponsor_suspend") and len(parts) > 2:
         await _admin_suspend_sponsor(query, int(parts[2]), user.id)
+    elif action.startswith("sponsor_activate") and len(parts) > 2:
+        await _admin_activate_sponsor(query, int(parts[2]), user.id)
     elif action.startswith("sponsor_add_balance") and len(parts) > 2:
         await _admin_sponsor_balance_prompt(query, context, int(parts[2]))
     elif action.startswith("sponsor_balance_confirm") and len(parts) > 2:
@@ -328,53 +330,73 @@ async def admin_campaigns_reply(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def admin_sponsors_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """💼 Sponsors — show ALL sponsors with status icons."""
+    """💼 Sponsors — show ALL sponsors grouped by status."""
     if not _require_admin(update.effective_user.id):
         return
 
     async with get_session() as session:
         from sqlalchemy import select
-        from models.sponsor import Sponsor, SponsorStatus
+        from models.sponsor import Sponsor
 
-        pending_result = await session.execute(
-            select(Sponsor).where(Sponsor.status == SponsorStatus.PENDING).limit(10)
+        result = await session.execute(
+            select(Sponsor).order_by(Sponsor.id.asc()).limit(40)
         )
-        pending_rows = [
-            {"id": s.id, "user_id": s.user_id, "status": "PENDING",
-             "available": s.available_balance}
-            for s in pending_result.scalars().all()
+        all_sponsors = [
+            {
+                "id": s.id,
+                "user_id": s.user_id,
+                "status": _enum_str(s.status),
+                "available": s.available_balance,
+            }
+            for s in result.scalars().all()
         ]
 
-        approved_result = await session.execute(
-            select(Sponsor).where(Sponsor.status == SponsorStatus.APPROVED).limit(10)
-        )
-        approved_rows = [
-            {"id": s.id, "user_id": s.user_id, "status": "APPROVED",
-             "available": s.available_balance}
-            for s in approved_result.scalars().all()
-        ]
+    icons = {
+        "PENDING": "⏳",
+        "APPROVED": "✅",
+        "SUSPENDED": "🚫",
+        "REJECTED": "❌",
+    }
+
+    # Group order: PENDING, APPROVED, SUSPENDED, REJECTED
+    order = ["PENDING", "APPROVED", "SUSPENDED", "REJECTED"]
+    by_status = {k: [] for k in order}
+    others = []
+
+    for s in all_sponsors:
+        if s["status"] in by_status:
+            by_status[s["status"]].append(s)
+        else:
+            others.append(s)
 
     buttons = []
+    for status_key in order:
+        for s in by_status[status_key]:
+            icon = icons.get(status_key, "•")
+            buttons.append([InlineKeyboardButton(
+                f"{icon} #{s['id']} — user {s['user_id']} — {fmt_usdt(s['available'])} USDT",
+                callback_data=f"admin:sponsor_view:{s['id']}"
+            )])
 
-    for s in pending_rows:
+    for s in others:
         buttons.append([InlineKeyboardButton(
-            f"⏳ #{s['id']} — user {s['user_id']} — {fmt_usdt(s['available'])} USDT",
-            callback_data=f"admin:sponsor_view:{s['id']}"
-        )])
-
-    for s in approved_rows:
-        buttons.append([InlineKeyboardButton(
-            f"✅ #{s['id']} — user {s['user_id']} — {fmt_usdt(s['available'])} USDT",
+            f"• #{s['id']} — user {s['user_id']} — {s['status']}",
             callback_data=f"admin:sponsor_view:{s['id']}"
         )])
 
     buttons.append([InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="admin:back")])
 
+    counts = {k: len(by_status[k]) for k in order}
+    total = len(all_sponsors)
+
     await update.message.reply_text(
         f"💼 <b>SPONSORS</b>\n\n"
-        f"⏳ Pending: <b>{len(pending_rows)}</b>\n"
-        f"✅ Approved: <b>{len(approved_rows)}</b>\n\n"
-        + ("Tap a sponsor to manage it." if (pending_rows or approved_rows) else "No sponsors yet."),
+        f"⏳ Pending: <b>{counts['PENDING']}</b>\n"
+        f"✅ Approved: <b>{counts['APPROVED']}</b>\n"
+        f"🚫 Suspended: <b>{counts['SUSPENDED']}</b>\n"
+        f"❌ Rejected: <b>{counts['REJECTED']}</b>\n\n"
+        f"Total: <b>{total}</b>\n"
+        + ("\nTap a sponsor to manage." if total else "No sponsors yet."),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
@@ -686,7 +708,6 @@ async def admin_text_input_dispatcher(update: Update, context: ContextTypes.DEFA
 
     text = update.message.text.strip()
 
-    # /cancel shortcut
     if text.lower() in ("/cancel", "cancel"):
         if any(k.startswith("admin_awaiting_") for k in context.user_data):
             context.user_data.clear()
@@ -695,27 +716,22 @@ async def admin_text_input_dispatcher(update: Update, context: ContextTypes.DEFA
             )
             return
 
-    # 1) Sponsor balance add
     if context.user_data.get("admin_awaiting_sponsor_balance"):
         await _handle_sponsor_balance_input(update, context, text)
         return
 
-    # 2) User balance adjust
     if context.user_data.get("admin_awaiting_user_balance"):
         await _handle_user_balance_input(update, context, text)
         return
 
-    # 3) User search
     if context.user_data.get("admin_awaiting_user_search"):
         await _handle_user_search_input(update, context, text)
         return
 
-    # 4) Broadcast
     if context.user_data.get("admin_awaiting_broadcast"):
         await _handle_broadcast_input(update, context, text)
         return
 
-    # 5) Force Join channel add
     if context.user_data.get("admin_awaiting_fj_add"):
         await _handle_fj_add_input(update, context, text)
         return
@@ -850,27 +866,51 @@ async def _admin_withdrawals(query) -> None:
 async def _admin_sponsors(query) -> None:
     async with get_session() as session:
         from sqlalchemy import select
-        from models.sponsor import Sponsor, SponsorStatus
+        from models.sponsor import Sponsor
 
-        pending = await session.execute(
-            select(Sponsor).where(Sponsor.status == SponsorStatus.PENDING).limit(10)
+        result = await session.execute(
+            select(Sponsor).order_by(Sponsor.id.asc()).limit(40)
         )
-        rows = [
-            {"id": s.id, "user_id": s.user_id}
-            for s in pending.scalars().all()
+        all_sponsors = [
+            {
+                "id": s.id,
+                "user_id": s.user_id,
+                "status": _enum_str(s.status),
+                "available": s.available_balance,
+            }
+            for s in result.scalars().all()
         ]
 
+    icons = {
+        "PENDING": "⏳",
+        "APPROVED": "✅",
+        "SUSPENDED": "🚫",
+        "REJECTED": "❌",
+    }
+    order = ["PENDING", "APPROVED", "SUSPENDED", "REJECTED"]
+    by_status = {k: [] for k in order}
+    for s in all_sponsors:
+        if s["status"] in by_status:
+            by_status[s["status"]].append(s)
+
     buttons = []
-    for s in rows:
-        buttons.append([InlineKeyboardButton(
-            f"⏳ Sponsor #{s['id']} (user {s['user_id']})",
-            callback_data=f"admin:sponsor_view:{s['id']}"
-        )])
+    for key in order:
+        for s in by_status[key]:
+            buttons.append([InlineKeyboardButton(
+                f"{icons.get(key, '•')} #{s['id']} (user {s['user_id']})",
+                callback_data=f"admin:sponsor_view:{s['id']}"
+            )])
     buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin:back")])
+
+    counts = {k: len(by_status[k]) for k in order}
 
     await _safe_edit(
         query,
-        f"💼 <b>SPONSORS</b>\n\nPending approval: <b>{len(rows)}</b>",
+        f"💼 <b>SPONSORS</b>\n\n"
+        f"⏳ Pending: <b>{counts['PENDING']}</b>\n"
+        f"✅ Approved: <b>{counts['APPROVED']}</b>\n"
+        f"🚫 Suspended: <b>{counts['SUSPENDED']}</b>\n"
+        f"❌ Rejected: <b>{counts['REJECTED']}</b>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
@@ -1527,15 +1567,14 @@ async def _admin_approve_sponsor(query, sponsor_id: int, admin_id: int) -> None:
 async def _admin_reject_sponsor(query, sponsor_id: int, admin_id: int) -> None:
     async with get_session() as session:
         async with session.begin():
-            from models.sponsor import Sponsor
+            from models.sponsor import Sponsor, SponsorStatus
             from models.audit_log import AuditLog
 
             sponsor = await session.get(Sponsor, sponsor_id)
             if sponsor:
-                target = getattr(
-                    type(sponsor.status), "REJECTED",
-                    getattr(type(sponsor.status), "SUSPENDED", None)
-                )
+                # Prefer REJECTED; fall back to SUSPENDED if enum lacks REJECTED
+                target = getattr(SponsorStatus, "REJECTED", None) or \
+                         getattr(SponsorStatus, "SUSPENDED", None)
                 if target is not None:
                     sponsor.status = target
 
@@ -1557,7 +1596,8 @@ async def _admin_suspend_sponsor(query, sponsor_id: int, admin_id: int) -> None:
 
             sponsor = await session.get(Sponsor, sponsor_id)
             if sponsor:
-                target = getattr(SponsorStatus, "SUSPENDED", SponsorStatus.PENDING)
+                target = getattr(SponsorStatus, "SUSPENDED", None) or \
+                         getattr(SponsorStatus, "PENDING")
                 sponsor.status = target
 
             session.add(AuditLog(
@@ -1568,6 +1608,70 @@ async def _admin_suspend_sponsor(query, sponsor_id: int, admin_id: int) -> None:
             ))
 
     await _safe_edit(query, f"🚫 Sponsor #{sponsor_id} suspended.")
+
+
+async def _admin_activate_sponsor(query, sponsor_id: int, admin_id: int) -> None:
+    """Re-activate a suspended or rejected sponsor — sets status to APPROVED."""
+    try:
+        async with get_session() as session:
+            async with session.begin():
+                from models.sponsor import Sponsor, SponsorStatus
+                from models.audit_log import AuditLog
+
+                sponsor = await session.get(Sponsor, sponsor_id)
+                if not sponsor:
+                    await _safe_edit(query, "❌ Sponsor not found.")
+                    return
+
+                old_status = _enum_str(sponsor.status)
+
+                if old_status not in ("SUSPENDED", "REJECTED", "PENDING"):
+                    await _safe_edit(
+                        query,
+                        f"⚠️ Sponsor is already <b>{old_status}</b> — no change needed.",
+                        parse_mode="HTML",
+                        reply_markup=sponsor_action_keyboard(sponsor_id, old_status),
+                    )
+                    return
+
+                sponsor.status = SponsorStatus.APPROVED
+                sponsor_user_id = sponsor.user_id
+
+                session.add(AuditLog(
+                    admin_id=admin_id,
+                    action="ACTIVATE_SPONSOR",
+                    target_type="sponsor",
+                    target_id=sponsor_id,
+                    old_value={"status": old_status},
+                    new_value={"status": "APPROVED"},
+                ))
+
+        # Notify the sponsor
+        from services.notification_service import NotificationService
+        asyncio.create_task(
+            NotificationService.send_to_user(
+                sponsor_user_id,
+                "✅ <b>Sponsor Account Reactivated</b>\n\n"
+                "Your sponsor account has been re-activated.\n"
+                "You can now create campaigns again.\n\n"
+                "Open /sponsor to continue.",
+            )
+        )
+
+        await _safe_edit(
+            query,
+            f"✅ <b>Sponsor #{sponsor_id} Reactivated</b>\n\n"
+            f"Status: <b>{old_status}</b> → <b>APPROVED</b>",
+            parse_mode="HTML",
+            reply_markup=sponsor_action_keyboard(sponsor_id, "APPROVED"),
+        )
+    except Exception as e:
+        log.exception("Activate sponsor failed", sponsor_id=sponsor_id)
+        await _safe_edit(
+            query,
+            f"❌ Failed: <code>{str(e)[:200]}</code>",
+            parse_mode="HTML",
+        )
 
 
 async def _admin_approve_withdrawal(query, withdrawal_id: int, admin_id: int) -> None:
