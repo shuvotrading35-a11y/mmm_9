@@ -1407,7 +1407,7 @@ async def _admin_flagged_list(query) -> None:
     )
 
 
-# ═══════════════════════════════════════════════════# ══════════════════════════════════════════════════════════════════
+# # ══════════════════════════════════════════════════════════════════
 # Action handlers
 # ══════════════════════════════════════════════════════════════════
 
@@ -1594,16 +1594,18 @@ async def _admin_reject_sponsor(query, sponsor_id: int, admin_id: int) -> None:
                     new_value={"status": "REJECTED"},
                 ))
 
-        # Notify sponsor
-        from services.notification_service import NotificationService
-        asyncio.create_task(
-            NotificationService.send_to_user(
+        # Notify sponsor (await directly so it actually sends)
+        try:
+            from services.notification_service import NotificationService
+            ok = await NotificationService.send_to_user(
                 sponsor_user_id,
                 "❌ <b>Sponsor Application Rejected</b>\n\n"
                 "Your sponsor application was not approved.\n\n"
                 "Contact support for more details.",
             )
-        )
+            log.info("Reject sponsor notify", sponsor_user_id=sponsor_user_id, ok=ok)
+        except Exception:
+            log.exception("Reject sponsor notify failed", sponsor_user_id=sponsor_user_id)
 
         await _safe_edit(
             query,
@@ -1643,10 +1645,10 @@ async def _admin_suspend_sponsor(query, sponsor_id: int, admin_id: int) -> None:
                     new_value={"status": "SUSPENDED"},
                 ))
 
-        # Notify sponsor
-        from services.notification_service import NotificationService
-        asyncio.create_task(
-            NotificationService.send_to_user(
+        # Notify sponsor (await directly)
+        try:
+            from services.notification_service import NotificationService
+            ok = await NotificationService.send_to_user(
                 sponsor_user_id,
                 "🚫 <b>Sponsor Account Suspended</b>\n\n"
                 "Your sponsor account has been suspended by an admin.\n\n"
@@ -1654,7 +1656,9 @@ async def _admin_suspend_sponsor(query, sponsor_id: int, admin_id: int) -> None:
                 "Active campaigns remain running.\n\n"
                 "Contact support if you believe this is a mistake.",
             )
-        )
+            log.info("Suspend sponsor notify", sponsor_user_id=sponsor_user_id, ok=ok)
+        except Exception:
+            log.exception("Suspend sponsor notify failed", sponsor_user_id=sponsor_user_id)
 
         await _safe_edit(
             query,
@@ -1702,17 +1706,19 @@ async def _admin_activate_sponsor(query, sponsor_id: int, admin_id: int) -> None
                     new_value={"status": "APPROVED"},
                 ))
 
-        # Notify the sponsor
-        from services.notification_service import NotificationService
-        asyncio.create_task(
-            NotificationService.send_to_user(
+        # Notify sponsor (await directly)
+        try:
+            from services.notification_service import NotificationService
+            ok = await NotificationService.send_to_user(
                 sponsor_user_id,
                 "✅ <b>Sponsor Account Reactivated</b>\n\n"
                 "Your sponsor account has been re-activated.\n"
                 "You can now create campaigns again.\n\n"
                 "Open /sponsor to continue.",
             )
-        )
+            log.info("Activate sponsor notify", sponsor_user_id=sponsor_user_id, ok=ok)
+        except Exception:
+            log.exception("Activate sponsor notify failed", sponsor_user_id=sponsor_user_id)
 
         await _safe_edit(
             query,
