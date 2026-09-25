@@ -57,34 +57,37 @@ log = structlog.get_logger(__name__)
 
 
 async def post_init(application: Application) -> None:
+    """Runs after bot is initialized — set commands, wire services, schedule jobs."""
     from telegram import BotCommand
-    commands = [
-        BotCommand("start", "Start the bot"),
-        BotCommand("help", "Get help"),
-        BotCommand("profile", "View your profile"),
-        BotCommand("tasks", "Browse available tasks"),
-        BotCommand("withdraw", "Withdraw earnings"),
-        BotCommand("referral", "Referral info"),
-        BotCommand("stats", "Platform statistics"),
-    ]
-    await application.bot.set_my_commands(commands)
-    log.info("Bot commands set")
 
+    # 1. Set bot commands
+    try:
+        commands = [
+            BotCommand("start", "Start the bot"),
+            BotCommand("help", "Get help"),
+            BotCommand("profile", "View your profile"),
+            BotCommand("tasks", "Browse available tasks"),
+            BotCommand("withdraw", "Withdraw earnings"),
+            BotCommand("referral", "Referral info"),
+            BotCommand("stats", "Platform statistics"),
+        ]
+        await application.bot.set_my_commands(commands)
+        log.info("Bot commands set")
+    except Exception:
+        log.exception("Failed to set bot commands")
+
+    # 2. Wire NotificationService
     try:
         from services.notification_service import NotificationService
-        for name in ("set_bot", "set_application", "configure", "init"):
-            m = getattr(NotificationService, name, None)
-            if callable(m):
-                try:
-                    m(application.bot)
-                except TypeError:
-                    m(bot=application.bot)
-                log.info("NotificationService initialized", method=name)
-                break
+        NotificationService.set_bot(application.bot)
+        log.info(
+            "NotificationService: bot set in post_init",
+            has_bot=NotificationService._bot is not None,
+        )
     except Exception:
-        log.exception("NotificationService setup skipped")
+        log.exception("NotificationService setup failed")
 
-    # ── Schedule periodic force-join membership check ──
+    # 3. Schedule periodic force-join membership check
     try:
         async def _force_join_periodic_job():
             try:
@@ -111,24 +114,15 @@ async def post_shutdown(application: Application) -> None:
 
 
 async def _global_force_join_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Global gate — runs BEFORE every other handler (group -20).
-
-    Blocks updates from users who haven't joined all required channels.
-    Admins bypass. Certain update types are allowed through.
-    """
-    # Feature toggle
+    """Global gate — runs BEFORE every other handler (group -20)."""
     if not settings.FORCE_JOIN_ENABLED:
         return
 
-    # ── Skip chat_member / my_chat_member ──
-    # These drive leave-detection and bot-added-to-chat flows.
-    # They must NEVER be blocked by force-join gating, otherwise
-    # the ChatMemberHandler in group 0 never runs.
+    # Skip chat_member / my_chat_member — these drive leave detection
     if update.chat_member or update.my_chat_member:
         return
 
-    # Skip edited messages — nothing to gate
+    # Skip edited messages
     if update.edited_message:
         return
 
@@ -136,11 +130,10 @@ async def _global_force_join_gate(update: Update, context: ContextTypes.DEFAULT_
     if not user:
         return
 
-    # Admins bypass
     if user.id in settings.ADMIN_IDS:
         return
 
-    # Allow-through list (so user can join / abort)
+    # Allow-through list
     if update.message and update.message.text:
         t = update.message.text.strip()
         if (
@@ -155,7 +148,7 @@ async def _global_force_join_gate(update: Update, context: ContextTypes.DEFAULT_
         if data == "force_join_check":
             return
 
-    # Everything else: check membership
+    # Check membership
     try:
         from middlewares.force_join_middleware import ForceJoinMiddleware
         passed = await ForceJoinMiddleware.check(update, context)
@@ -188,7 +181,7 @@ def build_application() -> Application:
     ))
 
     # ══════════════════════════════════════════════════════════
-    # -20. GLOBAL FORCE JOIN GATE — runs before everything
+    # -20. GLOBAL FORCE JOIN GATE
     # ══════════════════════════════════════════════════════════
     app.add_handler(TypeHandler(Update, _global_force_join_gate), group=-20)
 
