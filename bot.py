@@ -82,6 +82,26 @@ async def post_init(application: Application) -> None:
     except Exception:
         log.exception("NotificationService setup skipped")
 
+    # ── Schedule periodic force-join membership check ──
+    try:
+        async def _force_join_periodic_job():
+            try:
+                from services.force_join_service import ForceJoinService
+                await ForceJoinService.run_periodic_check(application.bot)
+            except Exception:
+                log.exception("Force-join periodic job failed")
+
+        application.job_queue.run_repeating(
+            _force_join_periodic_job,
+            interval=6 * 3600,       # every 6 hours
+            first=300,               # first run 5 minutes after startup
+            name="force_join_periodic_check",
+            job_kwargs={"misfire_grace_time": 300, "coalesce": True},
+        )
+        log.info("Force-join periodic check scheduled (every 6h)")
+    except Exception:
+        log.exception("Failed to schedule force-join periodic check")
+
 
 async def post_shutdown(application: Application) -> None:
     await close_db()
