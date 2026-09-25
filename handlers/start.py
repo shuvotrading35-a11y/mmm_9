@@ -5,6 +5,7 @@ import structlog
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from config import settings
 from database import get_session
 from keyboards.user_keyboards import main_menu_keyboard
 from middlewares.rate_limit_middleware import RateLimitMiddleware
@@ -16,15 +17,25 @@ STATES = {}  # No conversation state needed for /start
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /start [ref_CODE] — register or welcome back user."""
+    """Handle /start [ref_CODE] — force join → register → welcome."""
     user = update.effective_user
 
-    # Rate limit
+    # 1. Rate limit
     if not await RateLimitMiddleware.check_start(user.id):
         await update.message.reply_text("⏳ Too many requests. Please wait a moment.")
         return
 
-    # Parse referral code from deep link: /start ref_ABC123
+    # 2. Force join check (admins bypass)
+    if user.id not in settings.ADMIN_IDS:
+        try:
+            from middlewares.force_join_middleware import ForceJoinMiddleware
+            passed = await ForceJoinMiddleware.check(update, context)
+            if not passed:
+                return  # Middleware already sent the join prompt
+        except Exception:
+            log.exception("Force-join check failed in /start")
+
+    # 3. Parse referral code from deep link: /start ref_ABC123
     referrer_code = None
     if context.args:
         arg = context.args[0]
@@ -33,6 +44,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         elif arg.startswith("REF"):
             referrer_code = arg
 
+    # 4. Register / fetch user
     async with get_session() as session:
         async with session.begin():
             db_user, is_new = await UserService.get_or_create_user(
@@ -40,7 +52,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 tg_user=user,
                 referrer_code=referrer_code,
             )
-            is_sponsor = db_user.is_sponsor
+
+    # 5. Sponsor status (based on Sponsor table, not user flag)
+    is_sponsor = await _is_user_sponsor(user.id)
 
     from utils.decimal_utils import fmt_usdt
 
@@ -51,7 +65,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"💰 Complete Telegram tasks and earn real USDT.\n"
             f"🎁 Invite friends — earn commission on every task they complete.\n"
             f"💳 Withdraw to your BSC wallet instantly.\n\n"
-            f"Your balance: <b>0.00000000 USDT</b>\n\n"
+            f"Your balance: <b>{fmt_usdt(0)} USDT</b>\n\n"
             f"⭐ Start earning now!"
         )
     else:
