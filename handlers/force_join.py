@@ -1,5 +1,5 @@
 """
-Force Join Handler — handles the 'I've Joined' callback.
+Force Join Handler — handles the 'Joined - Check' callback.
 """
 import structlog
 from telegram import Update
@@ -25,7 +25,7 @@ async def handle_force_join_check(update: Update, context: ContextTypes.DEFAULT_
         )
 
     if all_joined:
-        # Delete the join-prompt message (optional)
+        # Delete the join-prompt message
         try:
             await query.message.delete()
         except Exception:
@@ -46,8 +46,8 @@ async def handle_force_join_check(update: Update, context: ContextTypes.DEFAULT_
         except Exception:
             log.exception("Failed to check sponsor status")
 
-        # Send main menu directly — do NOT call cmd_start
-        # (cmd_start needs update.message; it's None in a callback context)
+        # Send main menu directly (cmd_start needs update.message;
+        # it's None in a callback context)
         from keyboards.user_keyboards import main_menu_keyboard
 
         await context.bot.send_message(
@@ -60,18 +60,32 @@ async def handle_force_join_check(update: Update, context: ContextTypes.DEFAULT_
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(is_sponsor=is_sponsor),
         )
-    else:
-        keyboard = ForceJoinService.build_join_keyboard(missing)
+        return
+
+    # ── Still missing some channels ──
+    total = len(missing)
+    keyboard = ForceJoinService.build_join_keyboard(missing)
+
+    msg = (
+        f"❌ <b>You haven't joined all channels yet.</b>\n\n"
+        f"📌 You still need to join <b>{total}</b> channel(s).\n"
+        f"👉 Join each one below, then tap <b>✅ Joined - Check</b> again."
+    )
+
+    try:
+        await query.edit_message_text(
+            msg,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+    except Exception:
+        # Fallback if edit fails (e.g. the message was deleted or is too old)
         try:
-            await query.edit_message_text(
-                "❌ You haven't joined all required channels yet.\n\n"
-                "Please join and try again:",
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=msg,
+                parse_mode="HTML",
                 reply_markup=keyboard,
             )
         except Exception:
-            # Fallback if edit fails (e.g. message deleted)
-            await context.bot.send_message(
-                chat_id=user.id,
-                text="❌ Please join all required channels first:",
-                reply_markup=keyboard,
-            )
+            log.exception("Failed to send force-join retry prompt", user_id=user.id)
