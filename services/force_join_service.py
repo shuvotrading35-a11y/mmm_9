@@ -2,12 +2,14 @@
 Force Join Service — enforce mandatory channel membership before bot access.
 """
 import asyncio
-from typing import List, Tuple
+import time
+from typing import List, Tuple, Optional
 
 import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram._utils.types import JSONDict
 from telegram.error import TelegramError
 
 from models.force_join import ForceJoinChannel
@@ -15,12 +17,34 @@ from models.force_join import ForceJoinChannel
 log = structlog.get_logger(__name__)
 
 
-def _resolve_join_url(ch: ForceJoinChannel):
+# ══════════════════════════════════════════════════════════════════
+# Styled button
+# ══════════════════════════════════════════════════════════════════
+# NOTE: move to keyboards/style.py and import everywhere.
+
+class StyledButton(InlineKeyboardButton):
+    """InlineKeyboardButton with an optional `style` field."""
+
+    __slots__ = ("_style",)
+
+    def __init__(self, text: str, style: Optional[str] = None, **kwargs):
+        super().__init__(text=text, **kwargs)
+        object.__setattr__(self, "_style", style)
+
+    def to_dict(self, recursive: bool = True) -> JSONDict:
+        data = super().to_dict(recursive=recursive)
+        if self._style:
+            data["style"] = self._style
+        return data
+
+
+def _resolve_join_url(ch: ForceJoinChannel) -> Optional[str]:
     """Return a usable URL for a channel, or None."""
     if ch.invite_url:
         return ch.invite_url
     if ch.username:
-        return f"https://t.me/{ch.username.lstrip('@')}"
+        # removeprefix("@") — lstrip("@") strips ANY leading '@' chars
+        return f"https://t.me/{ch.username.removeprefix('@')}"
     return None
 
 
@@ -42,7 +66,7 @@ def _numbered_rows(missing_channels: List[ForceJoinChannel]) -> list:
         else:
             label = f"📢 Join Channel {idx}"
 
-        url_buttons.append(InlineKeyboardButton(label, url=url))
+        url_buttons.append(StyledButton(label, style="primary", url=url))
 
     # 2 buttons per row
     rows = [url_buttons[i:i + 2] for i in range(0, len(url_buttons), 2)]
@@ -108,8 +132,9 @@ class ForceJoinService:
           [✅ Joined - Check]
         """
         rows = _numbered_rows(missing_channels)
-        rows.append([InlineKeyboardButton(
+        rows.append([StyledButton(
             "✅ Joined - Check",
+            style="success",
             callback_data="force_join_check",
         )])
         return InlineKeyboardMarkup(rows)
@@ -124,7 +149,6 @@ class ForceJoinService:
         Background job: scan all active users, verify force-join membership,
         and notify those who have left any required channel.
         """
-        import time
         from database import get_session
         from models.user import User, UserStatus
 
@@ -244,8 +268,9 @@ class ForceJoinService:
     ) -> InlineKeyboardMarkup:
         """Numbered re-join buttons (2 per row) + a check button."""
         rows = _numbered_rows(missing_channels)
-        rows.append([InlineKeyboardButton(
+        rows.append([StyledButton(
             "✅ Joined - Check",
+            style="success",
             callback_data="force_join_check",
         )])
         return InlineKeyboardMarkup(rows)
