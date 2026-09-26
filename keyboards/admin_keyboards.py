@@ -3,12 +3,53 @@ Admin Keyboards — ReplyKeyboard (styled) for main menu,
 InlineKeyboard for per-item actions.
 Requires python-telegram-bot>=22.7.
 """
+from typing import Optional
+
 from telegram import (
     ReplyKeyboardMarkup,
     KeyboardButton,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
+from telegram._utils.types import JSONDict
+
+
+# ══════════════════════════════════════════════════════════════════
+# Styled buttons
+# ══════════════════════════════════════════════════════════════════
+# NOTE: move these two classes into a shared module
+# (e.g. keyboards/style.py) and import them in every keyboard file.
+
+class StyledButton(InlineKeyboardButton):
+    """InlineKeyboardButton with an optional `style` field."""
+
+    __slots__ = ("_style",)
+
+    def __init__(self, text: str, style: Optional[str] = None, **kwargs):
+        super().__init__(text=text, **kwargs)
+        object.__setattr__(self, "_style", style)
+
+    def to_dict(self, recursive: bool = True) -> JSONDict:
+        data = super().to_dict(recursive=recursive)
+        if self._style:
+            data["style"] = self._style
+        return data
+
+
+class StyledKeyboardButton(KeyboardButton):
+    """KeyboardButton with an optional `style` field for reply keyboards."""
+
+    __slots__ = ("_style",)
+
+    def __init__(self, text: str, style: Optional[str] = None, **kwargs):
+        super().__init__(text=text, **kwargs)
+        object.__setattr__(self, "_style", style)
+
+    def to_dict(self, recursive: bool = True) -> JSONDict:
+        data = super().to_dict(recursive=recursive)
+        if self._style:
+            data["style"] = self._style
+        return data
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -19,34 +60,34 @@ def admin_main_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton("👥 Users", style="primary"),
-                KeyboardButton("📋 Campaigns", style="primary"),
+                StyledKeyboardButton("👥 Users",      style="primary"),
+                StyledKeyboardButton("📋 Campaigns",  style="primary"),
             ],
             [
-                KeyboardButton("💼 Sponsors", style="primary"),
-                KeyboardButton("💰 Deposits", style="success"),
+                StyledKeyboardButton("💼 Sponsors", style="primary"),
+                StyledKeyboardButton("💰 Deposits", style="success"),
             ],
             [
-                KeyboardButton("💳 Withdrawals", style="success"),
-                KeyboardButton("🎁 Referrals", style="primary"),
+                StyledKeyboardButton("💳 Withdrawals", style="success"),
+                StyledKeyboardButton("🎁 Referrals",   style="primary"),
             ],
             [
-                KeyboardButton("📊 Admin Stats", style="primary"),
-                KeyboardButton("📢 Broadcast", style="primary"),
+                StyledKeyboardButton("📊 Admin Stats", style="primary"),
+                StyledKeyboardButton("📢 Broadcast",   style="primary"),
             ],
             [
-                KeyboardButton("📢 Force Join", style="primary"),
-                KeyboardButton("🚫 Banned Users", style="danger"),
+                StyledKeyboardButton("📢 Force Join",   style="primary"),
+                StyledKeyboardButton("🚫 Banned Users", style="danger"),
             ],
             [
-                KeyboardButton("⚙️ Settings", style="primary"),
-                KeyboardButton("🛡 Fraud Monitor", style="danger"),
+                StyledKeyboardButton("⚙️ Settings",      style="primary"),
+                StyledKeyboardButton("🛡 Fraud Monitor", style="danger"),
             ],
             [
-                KeyboardButton("📜 Audit Logs"),
+                StyledKeyboardButton("📜 Audit Logs", style="primary"),
             ],
             [
-                KeyboardButton("🔙 Close Admin Panel", style="danger"),
+                StyledKeyboardButton("🔙 Close Admin Panel", style="danger"),
             ],
         ],
         resize_keyboard=True,
@@ -59,8 +100,8 @@ def admin_back_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton("🔙 Back to Admin Panel", style="primary"),
-                KeyboardButton("🏠 Main Menu", style="primary"),
+                StyledKeyboardButton("🔙 Back to Admin Panel", style="primary"),
+                StyledKeyboardButton("🏠 Main Menu",            style="primary"),
             ],
         ],
         resize_keyboard=True,
@@ -72,8 +113,8 @@ def admin_cancel_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton("❌ Cancel Admin", style="danger"),
-                KeyboardButton("🔙 Back to Admin Panel", style="primary"),
+                StyledKeyboardButton("❌ Cancel Admin",         style="danger"),
+                StyledKeyboardButton("🔙 Back to Admin Panel",  style="primary"),
             ],
         ],
         resize_keyboard=True,
@@ -87,28 +128,64 @@ def admin_cancel_reply_keyboard() -> ReplyKeyboardMarkup:
 def user_action_keyboard(user_id: int, status: str) -> InlineKeyboardMarkup:
     """Generic user action keyboard (kept for compatibility)."""
     buttons = [
-        [InlineKeyboardButton("💰 Adjust Balance", callback_data=f"admin:user_balance:{user_id}")],
+        [StyledButton(
+            "💰 Adjust Balance",
+            style="primary",
+            callback_data=f"admin:user_balance:{user_id}",
+        )],
     ]
     if status != "BANNED":
-        buttons.append([InlineKeyboardButton("🚫 Ban User", callback_data=f"admin:ban:{user_id}")])
+        buttons.append([StyledButton(
+            "🚫 Ban User",
+            style="danger",
+            callback_data=f"admin:ban:{user_id}",
+        )])
     else:
-        buttons.append([InlineKeyboardButton("✅ Unban User", callback_data=f"admin:unban:{user_id}")])
+        buttons.append([StyledButton(
+            "✅ Unban User",
+            style="success",
+            callback_data=f"admin:unban:{user_id}",
+        )])
     if status == "RESTRICTED":
-        buttons.append([InlineKeyboardButton("✅ Unrestrict", callback_data=f"admin:unrestrict:{user_id}")])
-    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin:users")])
+        buttons.append([StyledButton(
+            "✅ Unrestrict",
+            style="success",
+            callback_data=f"admin:unrestrict:{user_id}",
+        )])
+    buttons.append([StyledButton(
+        "🔙 Back",
+        style="primary",
+        callback_data="admin:users",
+    )])
     return InlineKeyboardMarkup(buttons)
 
 
 def user_detail_keyboard(user_id: int, status: str) -> InlineKeyboardMarkup:
     """Actions for a single user — shown from user detail view."""
     buttons = [
-        [InlineKeyboardButton("💰 Adjust Balance", callback_data=f"admin:user_balance:{user_id}")],
+        [StyledButton(
+            "💰 Adjust Balance",
+            style="primary",
+            callback_data=f"admin:user_balance:{user_id}",
+        )],
     ]
     if status != "BANNED":
-        buttons.append([InlineKeyboardButton("🚫 Ban User", callback_data=f"admin:ban:{user_id}")])
+        buttons.append([StyledButton(
+            "🚫 Ban User",
+            style="danger",
+            callback_data=f"admin:ban:{user_id}",
+        )])
     else:
-        buttons.append([InlineKeyboardButton("✅ Unban User", callback_data=f"admin:unban:{user_id}")])
-    buttons.append([InlineKeyboardButton("🔙 Back to Users", callback_data="admin:users")])
+        buttons.append([StyledButton(
+            "✅ Unban User",
+            style="success",
+            callback_data=f"admin:unban:{user_id}",
+        )])
+    buttons.append([StyledButton(
+        "🔙 Back to Users",
+        style="primary",
+        callback_data="admin:users",
+    )])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -117,35 +194,48 @@ def campaign_action_keyboard(campaign_id: int, status: str) -> InlineKeyboardMar
 
     if status == "PENDING":
         buttons.append([
-            InlineKeyboardButton("✅ Approve", callback_data=f"admin:campaign_approve:{campaign_id}"),
-            InlineKeyboardButton("❌ Reject", callback_data=f"admin:campaign_reject:{campaign_id}"),
+            StyledButton("✅ Approve", style="success",
+                         callback_data=f"admin:campaign_approve:{campaign_id}"),
+            StyledButton("❌ Reject",  style="danger",
+                         callback_data=f"admin:campaign_reject:{campaign_id}"),
         ])
     if status == "ACTIVE":
-        buttons.append([InlineKeyboardButton(
-            "⏸ Pause", callback_data=f"admin:campaign_pause:{campaign_id}"
+        buttons.append([StyledButton(
+            "⏸ Pause",
+            style="danger",
+            callback_data=f"admin:campaign_pause:{campaign_id}",
         )])
     if status == "PAUSED":
-        buttons.append([InlineKeyboardButton(
-            "▶️ Resume", callback_data=f"admin:campaign_resume:{campaign_id}"
+        buttons.append([StyledButton(
+            "▶️ Resume",
+            style="success",
+            callback_data=f"admin:campaign_resume:{campaign_id}",
         )])
 
     if status != "COMPLETED":
-        buttons.append([InlineKeyboardButton(
+        buttons.append([StyledButton(
             "🗑 Delete (Force)",
+            style="danger",
             callback_data=f"admin:campaign_delete:{campaign_id}",
         )])
 
-    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin:campaigns")])
+    buttons.append([StyledButton(
+        "🔙 Back",
+        style="primary",
+        callback_data="admin:campaigns",
+    )])
     return InlineKeyboardMarkup(buttons)
 
 
 def withdrawal_action_keyboard(withdrawal_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✅ Approve", callback_data=f"admin:wd_approve:{withdrawal_id}"),
-            InlineKeyboardButton("❌ Reject", callback_data=f"admin:wd_reject:{withdrawal_id}"),
+            StyledButton("✅ Approve", style="success",
+                         callback_data=f"admin:wd_approve:{withdrawal_id}"),
+            StyledButton("❌ Reject",  style="danger",
+                         callback_data=f"admin:wd_reject:{withdrawal_id}"),
         ],
-        [InlineKeyboardButton("🔙 Back", callback_data="admin:withdrawals")],
+        [StyledButton("🔙 Back", style="primary", callback_data="admin:withdrawals")],
     ])
 
 
@@ -153,30 +243,41 @@ def sponsor_action_keyboard(sponsor_id: int, status: str) -> InlineKeyboardMarku
     buttons = []
 
     # Add Balance — always available
-    buttons.append([InlineKeyboardButton(
+    buttons.append([StyledButton(
         "💰 Add Balance",
+        style="primary",
         callback_data=f"admin:sponsor_add_balance:{sponsor_id}",
     )])
 
     if status == "PENDING":
         buttons.append([
-            InlineKeyboardButton("✅ Approve", callback_data=f"admin:sponsor_approve:{sponsor_id}"),
-            InlineKeyboardButton("❌ Reject", callback_data=f"admin:sponsor_reject:{sponsor_id}"),
+            StyledButton("✅ Approve", style="success",
+                         callback_data=f"admin:sponsor_approve:{sponsor_id}"),
+            StyledButton("❌ Reject",  style="danger",
+                         callback_data=f"admin:sponsor_reject:{sponsor_id}"),
         ])
 
     if status == "APPROVED":
-        buttons.append([InlineKeyboardButton(
-            "🚫 Suspend", callback_data=f"admin:sponsor_suspend:{sponsor_id}"
+        buttons.append([StyledButton(
+            "🚫 Suspend",
+            style="danger",
+            callback_data=f"admin:sponsor_suspend:{sponsor_id}",
         )])
 
     if status in ("SUSPENDED", "REJECTED"):
-        buttons.append([InlineKeyboardButton(
+        buttons.append([StyledButton(
             "✅ Un-suspend (Reactivate)",
-            callback_data=f"admin:sponsor_activate:{sponsor_id}"
+            style="success",
+            callback_data=f"admin:sponsor_activate:{sponsor_id}",
         )])
 
-    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin:sponsors")])
+    buttons.append([StyledButton(
+        "🔙 Back",
+        style="primary",
+        callback_data="admin:sponsors",
+    )])
     return InlineKeyboardMarkup(buttons)
+
 
 def deposit_action_keyboard(deposit_id: int, status: str) -> InlineKeyboardMarkup:
     """Action buttons for a specific deposit."""
@@ -184,11 +285,17 @@ def deposit_action_keyboard(deposit_id: int, status: str) -> InlineKeyboardMarku
 
     if status == "PENDING":
         buttons.append([
-            InlineKeyboardButton("✅ Approve", callback_data=f"admin:deposit_approve:{deposit_id}"),
-            InlineKeyboardButton("❌ Reject", callback_data=f"admin:deposit_reject:{deposit_id}"),
+            StyledButton("✅ Approve", style="success",
+                         callback_data=f"admin:deposit_approve:{deposit_id}"),
+            StyledButton("❌ Reject",  style="danger",
+                         callback_data=f"admin:deposit_reject:{deposit_id}"),
         ])
 
-    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin:deposits")])
+    buttons.append([StyledButton(
+        "🔙 Back",
+        style="primary",
+        callback_data="admin:deposits",
+    )])
 
     return InlineKeyboardMarkup(buttons)
 
@@ -208,22 +315,26 @@ def force_join_manage_keyboard(channels: list) -> InlineKeyboardMarkup:
             or str(ch.get("chat_id"))
         )
         buttons.append([
-            InlineKeyboardButton(
+            StyledButton(
                 f"{status_icon} {label[:30]}",
+                style="primary",
                 callback_data=f"admin:fj_view:{ch['id']}",
             ),
-            InlineKeyboardButton(
+            StyledButton(
                 "🗑",
+                style="danger",
                 callback_data=f"admin:fj_delete:{ch['id']}",
             ),
         ])
 
-    buttons.append([InlineKeyboardButton(
+    buttons.append([StyledButton(
         "➕ Add Channel",
+        style="success",
         callback_data="admin:fj_add",
     )])
-    buttons.append([InlineKeyboardButton(
+    buttons.append([StyledButton(
         "🔙 Back to Admin Panel",
+        style="primary",
         callback_data="admin:back",
     )])
 
@@ -233,12 +344,14 @@ def force_join_manage_keyboard(channels: list) -> InlineKeyboardMarkup:
 def force_join_confirm_delete_keyboard(channel_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(
+            StyledButton(
                 "✅ Yes, Delete",
+                style="danger",
                 callback_data=f"admin:fj_delete_confirm:{channel_id}",
             ),
-            InlineKeyboardButton(
+            StyledButton(
                 "❌ Cancel",
+                style="success",
                 callback_data=f"admin:fj_view:{channel_id}",
             ),
         ],
