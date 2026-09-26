@@ -1,11 +1,14 @@
 """
 Profile Handler — view profile and set BSC wallet.
+Uses single-message menu pattern (auto-delete previous).
 """
 import structlog
-from telegram import Update
+from telegram import (
+    Update, InlineKeyboardMarkup, InlineKeyboardButton,
+)
 from telegram.ext import (
     ContextTypes, ConversationHandler,
-    MessageHandler, CommandHandler, filters
+    MessageHandler, CommandHandler, CallbackQueryHandler, filters,
 )
 
 from database import get_session
@@ -13,14 +16,19 @@ from keyboards.user_keyboards import cancel_keyboard, main_menu_keyboard
 from utils.decimal_utils import fmt_usdt
 from utils.time_utils import fmt_date
 from utils.wallet_utils import validate_bsc_address, mask_wallet
+from utils.menu import send_menu
 
 log = structlog.get_logger(__name__)
 
 WALLET_INPUT = 1
 
 
+# ══════════════════════════════════════════════════════════════════
+# Profile view
+# ══════════════════════════════════════════════════════════════════
+
 async def handle_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show user profile."""
+    """Show user profile (menu-style — deletes previous menu message)."""
     user = update.effective_user
 
     async with get_session() as session:
@@ -29,7 +37,10 @@ async def handle_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         db_user = await session.get(User, user.id)
         if not db_user:
-            await update.message.reply_text("Please use /start first.")
+            await send_menu(
+                update, context,
+                text="Please use /start first.",
+            )
             return
 
         ref_stats = await UserService.get_referral_stats(session, user.id)
@@ -60,87 +71,181 @@ async def handle_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"📅 Joined: {fmt_date(db_user.joined_at)}"
     )
 
-    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(
             "💳 Set/Update BSC Wallet",
-            callback_data="profile_set_wallet"
+            callback_data="profile_set_wallet",
         )]
     ])
 
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await send_menu(
+        update, context,
+        text=text,
+        reply_markup=keyboard,
+    )
 
+
+# ══════════════════════════════════════════════════════════════════
+# Wallet set flow (ConversationHandler)
+# ══════════════════════════════════════════════════════════════════
 
 async def wallet_set_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Prompt user to enter BSC wallet."""
+    """Prompt user to enter BSC wallet — edits the existing profile message in place."""
     query = update.callback_query
     await query.answer()
-    await query.message.reply_text(
+
+    prompt_text = (
         "💳 <b>Set BSC Wallet</b>\n\n"
         "Please send your BNB Smart Chain (BSC) wallet address.\n"
         "⚠️ Make sure it's a valid BEP-20 wallet you control.\n\n"
-        "Example: <code>0x742d35Cc6634C0532925a3b844Bc454e4438f44e</code>",
+        "Example: <code>0x742d35Cc6634C0532925a3b844Bc454e4438f44e</code>"
+    )
+
+    # Try to edit the profile message in place — cleanest UX
+    try:
+        await query.edit_message_text(
+            prompt_text,
+            parse_mode="HTML",
+            reply_markup=cancel_keyboard("profile_cancel"),
+        )
+        return WALLET_INPUT
+    except Exception:
+        pass
+
+    # Fallback — delete previous menu, send a fresh prompt
+    chat_id = update.effective_chat.id
+    key = f"menu_msg_id_{chat_id}"
+    prev_id = context.user_data.get(key)
+    if prev_id:
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=prev_id)
+        except Exception:
+            pass
+
+    sent = await context.bot.send_message(
+        chat_id=chat_id,
+        text=prompt_text,
         parse_mode="HTML",
         reply_markup=cancel_keyboard("profile_cancel"),
     )
+    context.user_data[key] = sent.message_id
     return WALLET_INPUT
 
 
 async def handle_set_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Receive and validate BSC wallet address."""
     user = update.effective_user
-    address = update.message.text.strip()
+    chat_id = update.effective_chat.id
+    address = (update.message.text or "").strip()
 
+    # Delete the user's wallet input message (keep chat clean)
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    # ── Validation ──
     if not validate_bsc_address(address):
-        await update.message.reply_text(
+        error_text = (
             "❌ Invalid BSC wallet address.\n"
             "Please send a valid EIP-55 checksummed address.\n\n"
-            "Example: <code>0x742d35Cc6634C0532925a3b844Bc454e4438f44e</code>",
-            parse_mode="HTML",
-            reply_markup=cancel_keyboard("profile_cancel"),
+            "Example: <code>0x742d35Cc6634C0532925a3b844Bc454e4438f44e</code>"
         )
+        try:
+            # Edit the prompt message to show the error
+            await update.effective_chat.send_message(
+                chat_id=chat_id,
+                text=error_text,
+                parse_mode="HTML",
+                reply_markup=cancel_keyboard("profile_cancel"),
+            )
+        except Exception:
+            pass
         return WALLET_INPUT
 
+    # ── Save ──
     async with get_session() as session:
         async with session.begin():
             from services.user_service import UserService
             await UserService.set_bsc_wallet(session, user.id, address)
 
-    # Fraud check: duplicate wallet
-    async with get_session() as session:
-        from services.fraud_service import FraudService
-        async with session.begin():
-            await FraudService.check_duplicate_wallet(session, user.id, address)
+    # ── Fraud check ──
+    try:
+        async with get_session() as session:
+            from services.fraud_service import FraudService
+            async with session.begin():
+                await FraudService.check_duplicate_wallet(session, user.id, address)
+    except Exception:
+        log.exception("Fraud check failed", user_id=user.id)
 
-    await update.message.reply_text(
-        f"✅ BSC wallet updated!\n\n"
-        f"<code>{mask_wallet(address)}</code>\n\n"
-        f"You can now request withdrawals.",
-        parse_mode="HTML",
+    # ── Delete prompt, show success + main menu ──
+    key = f"menu_msg_id_{chat_id}"
+    prev_id = context.user_data.get(key)
+    if prev_id:
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=prev_id)
+        except Exception:
+            pass
+
+    await send_menu(
+        update, context,
+        text=(
+            f"✅ <b>BSC Wallet Updated!</b>\n\n"
+            f"<code>{mask_wallet(address)}</code>\n\n"
+            f"You can now request withdrawals."
+        ),
+        reply_markup=main_menu_keyboard(),
     )
     return ConversationHandler.END
 
 
 async def wallet_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text("❌ Wallet update cancelled.")
+    """Cancel wallet update — clean up and return to main menu."""
+    if update.callback_query:
+        await update.callback_query.answer()
+        chat_id = update.effective_chat.id
+        key = f"menu_msg_id_{chat_id}"
+        prev_id = context.user_data.get(key)
+        if prev_id:
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=prev_id)
+            except Exception:
+                pass
+
+        sent = await context.bot.send_message(
+            chat_id=chat_id,
+            text="❌ <b>Wallet update cancelled.</b>",
+            parse_mode="HTML",
+        )
+        context.user_data[key] = sent.message_id
+        return ConversationHandler.END
+
+    # Fallback via /cancel command
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    await send_menu(
+        update, context,
+        text="❌ <b>Wallet update cancelled.</b>",
+    )
     return ConversationHandler.END
 
 
 def profile_conv_handler() -> ConversationHandler:
     return ConversationHandler(
         entry_points=[
-            MessageHandler(filters.Regex(r"^👤 Profile$"), handle_profile),
-            CommandHandler("profile", handle_profile),
+            # Triggered by inline button in the profile message
+            CallbackQueryHandler(wallet_set_prompt, pattern=r"^profile_set_wallet$"),
         ],
         states={
             WALLET_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_set_wallet),
+                CallbackQueryHandler(wallet_cancel, pattern=r"^profile_cancel$"),
             ],
         },
         fallbacks=[
-            MessageHandler(filters.Regex(r"^/cancel$"), wallet_cancel),
+            CommandHandler("cancel", wallet_cancel),
         ],
         per_message=False,
     )
