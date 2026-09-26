@@ -1,13 +1,10 @@
 """
 Profile Handler — view profile and set BSC wallet.
-Simple message flow: each press creates a new message.
+Simple state flag (not ConversationHandler) so menu buttons never get stuck.
 """
 import structlog
 from telegram import Update
-from telegram.ext import (
-    ContextTypes, ConversationHandler,
-    MessageHandler, CommandHandler, filters,
-)
+from telegram.ext import ContextTypes
 
 from database import get_session
 from keyboards.user_keyboards import (
@@ -21,7 +18,8 @@ from utils.wallet_utils import validate_bsc_address, mask_wallet
 
 log = structlog.get_logger(__name__)
 
-WALLET_INPUT = 1
+# user_data flag
+WALLET_FLAG = "awaiting_wallet"
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -29,7 +27,10 @@ WALLET_INPUT = 1
 # ══════════════════════════════════════════════════════════════════
 
 async def handle_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show user profile with profile-specific reply keyboard."""
+    """Show user profile."""
+    # Any previous wallet request is cancelled when profile re-opens
+    context.user_data.pop(WALLET_FLAG, None)
+
     user = update.effective_user
 
     async with get_session() as session:
@@ -77,24 +78,28 @@ async def handle_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 # ══════════════════════════════════════════════════════════════════
-# Wallet set flow
+# Wallet set flow — flag-based, no ConversationHandler
 # ══════════════════════════════════════════════════════════════════
 
-async def wallet_set_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """User pressed '💳 Set/Update Wallet' — ask for address."""
+async def wallet_set_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """User pressed '💳 Set/Update Wallet' — set flag and ask for address."""
+    context.user_data[WALLET_FLAG] = True
     await update.message.reply_text(
         "💳 <b>Set BSC Wallet</b>\n\n"
         "Please send your BNB Smart Chain (BSC) wallet address.\n"
         "⚠️ Make sure it's a valid BEP-20 wallet you control.\n\n"
-        "Example: <code>0x742d35Cc6634C0532925a3b844Bc454e4438f44e</code>",
+        "Example: <code>0x742d35Cc6634C0532925a3b844Bc454e4438f44e</code>\n\n"
+        "Send /cancel or tap 🏠 Main Menu to abort.",
         parse_mode="HTML",
         reply_markup=cancel_keyboard("profile_cancel"),
     )
-    return WALLET_INPUT
 
 
-async def handle_set_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive and validate BSC wallet address."""
+async def handle_set_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Receive and validate BSC wallet address.
+    Only runs when WALLET_FLAG is set — checked by the caller.
+    """
     user = update.effective_user
     address = (update.message.text or "").strip()
 
@@ -102,12 +107,12 @@ async def handle_set_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not validate_bsc_address(address):
         await update.message.reply_text(
             "❌ <b>Invalid BSC wallet address.</b>\n\n"
-            "Please send a valid EIP-55 checksummed address.\n\n"
+            "Please send a valid EVM address (0x + 40 hex chars).\n\n"
             "Example: <code>0x742d35Cc6634C0532925a3b844Bc454e4438f44e</code>",
             parse_mode="HTML",
             reply_markup=cancel_keyboard("profile_cancel"),
         )
-        return WALLET_INPUT
+        return
 
     # ── Save ──
     async with get_session() as session:
@@ -124,7 +129,9 @@ async def handle_set_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     except Exception:
         log.exception("Fraud check failed", user_id=user.id)
 
-    # ── Success + profile keyboard ──
+    # ── Clear flag, show success ──
+    context.user_data.pop(WALLET_FLAG, None)
+
     await update.message.reply_text(
         f"✅ <b>BSC Wallet Updated!</b>\n\n"
         f"<code>{mask_wallet(address)}</code>\n\n"
@@ -132,23 +139,21 @@ async def handle_set_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         parse_mode="HTML",
         reply_markup=profile_keyboard(),
     )
-    return ConversationHandler.END
 
 
-async def wallet_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def wallet_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Cancel wallet update."""
+    context.user_data.pop(WALLET_FLAG, None)
     await update.message.reply_text(
-        "❌ <b>Wallet update cancelled.</b>\n\nSend /profile to view your profile again.",
+        "❌ <b>Wallet update cancelled.</b>",
         parse_mode="HTML",
+        reply_markup=profile_keyboard(),
     )
-    return ConversationHandler.END
 
 
-async def back_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def back_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Back to main menu from profile screen."""
-    for key in list(context.user_data.keys()):
-        if not key.startswith("menu_msg_id_"):
-            context.user_data.pop(key, None)
+    context.user_data.pop(WALLET_FLAG, None)
 
     user = update.effective_user
 
@@ -171,23 +176,28 @@ async def back_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         parse_mode="HTML",
         reply_markup=main_menu_keyboard(is_sponsor=is_sponsor),
     )
-    return ConversationHandler.END
 
 
-def profile_conv_handler() -> ConversationHandler:
-    """Wallet-input conversation only."""
-    return ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.Regex(r"^💳 Set/Update Wallet$"), wallet_set_start),
-        ],
-        states={
-            WALLET_INPUT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_set_wallet),
-                MessageHandler(filters.Regex(r"^🔙 Back to Main Menu$"), back_to_main_menu),
-            ],
-        },
-        fallbacks=[
-            CommandHandler("cancel", wallet_cancel),
-        ],
-        per_message=False,
-    )
+async def wallet_input_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Global router: if WALLET_FLAG is set and the incoming text is not a
+    menu button, treat it as a wallet address.
+    """
+    if not context.user_data.get(WALLET_FLAG):
+        return
+
+    text = (update.message.text or "").strip()
+
+    # If user pressed a known menu button — cancel and let its own handler run
+    MENU_BUTTONS = {
+        "👤 Profile", "💰 Live Payments", "📋 View Tasks", "🎁 Referral",
+        "💳 Withdraw", "📊 Stats", "📣 Promotion", "🆘 Support",
+        "💼 Sponsor Panel", "🏠 Main Menu", "🔙 Back to Main Menu",
+        "💳 Set/Update Wallet",
+    }
+    if text in MENU_BUTTONS:
+        context.user_data.pop(WALLET_FLAG, None)
+        return  # let the appropriate handler run next
+
+    # Otherwise treat as wallet input
+    await handle_set_wallet(update, context)
