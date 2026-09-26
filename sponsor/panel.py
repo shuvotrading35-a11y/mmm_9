@@ -4,11 +4,13 @@ Sponsor Panel — campaign management and wallet for approved sponsors.
 import re
 import structlog
 from decimal import Decimal
+from typing import Optional
 from telegram import (
     Update,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
+from telegram._utils.types import JSONDict
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
@@ -25,6 +27,27 @@ from keyboards.sponsor_keyboards import (
 from utils.decimal_utils import fmt_usdt
 
 log = structlog.get_logger(__name__)
+
+
+# ══════════════════════════════════════════════════════════════════
+# Styled button
+# ══════════════════════════════════════════════════════════════════
+# NOTE: move to keyboards/style.py and import everywhere.
+
+class StyledButton(InlineKeyboardButton):
+    """InlineKeyboardButton with an optional `style` field."""
+
+    __slots__ = ("_style",)
+
+    def __init__(self, text: str, style: Optional[str] = None, **kwargs):
+        super().__init__(text=text, **kwargs)
+        object.__setattr__(self, "_style", style)
+
+    def to_dict(self, recursive: bool = True) -> JSONDict:
+        data = super().to_dict(recursive=recursive)
+        if self._style:
+            data["style"] = self._style
+        return data
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -97,7 +120,8 @@ def _parse_channel_input(raw: str) -> dict:
                 "invite_url": None, "display": str(cid)}
 
     # Otherwise — treat as username
-    username = normalized.lstrip("@").strip()
+    # removeprefix("@") strips exactly one '@', unlike lstrip("@")
+    username = normalized.removeprefix("@").strip()
 
     if not username:
         return {"username": None, "chat_id": None, "invite_url": None, "display": "—"}
@@ -136,7 +160,7 @@ async def _get_sponsor(session, user_id: int):
     return await SponsorService.get_sponsor_by_user(session, user_id)
 
 
-# # ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
 # Entry point — /sponsor command
 # ══════════════════════════════════════════════════════════════════
 
@@ -224,6 +248,8 @@ async def sponsor_panel_handler(update: Update, context: ContextTypes.DEFAULT_TY
         parse_mode="HTML",
         reply_markup=sponsor_main_reply_keyboard(),
     )
+
+
 # ══════════════════════════════════════════════════════════════════
 # Reply keyboard handlers
 # ══════════════════════════════════════════════════════════════════
@@ -275,14 +301,10 @@ async def sponsor_my_campaigns_reply(update: Update, context: ContextTypes.DEFAU
 
     buttons = []
     for c in rows:
-        icon = {
-            "ACTIVE": "🟢", "PAUSED": "⏸", "COMPLETED": "✅",
-            "PENDING": "⏳", "PENDING_FUNDING": "💳",
-            "EXPIRED": "❌", "CANCELLED": "🚫",
-        }.get(c["status"], "•")
-        buttons.append([InlineKeyboardButton(
-            f"{icon} #{c['id']}: {c['title'][:25]}",
-            callback_data=f"sponsor:campaign_detail:{c['id']}"
+        buttons.append([StyledButton(
+            f"{_status_icon(c['status'])} #{c['id']}: {c['title'][:25]}",
+            style="primary",
+            callback_data=f"sponsor:campaign_detail:{c['id']}",
         )])
 
     await update.message.reply_text(
@@ -385,7 +407,6 @@ async def sponsor_task_type_reply(update: Update, context: ContextTypes.DEFAULT_
     type_map = {
         "📢 Channel Join": "CHANNEL_JOIN",
         "👥 Group Join": "GROUP_JOIN",
-        
         "📢👥 Channel + Group": "CHANNEL_GROUP_JOIN",
     }
     task_type = type_map.get(text)
@@ -550,16 +571,16 @@ async def _sponsor_list_campaigns(query, sponsor_id: int) -> None:
 
     buttons = []
     for c in rows:
-        icon = {
-            "ACTIVE": "🟢", "PAUSED": "⏸", "COMPLETED": "✅",
-            "PENDING": "⏳", "PENDING_FUNDING": "💳",
-            "EXPIRED": "❌", "CANCELLED": "🚫",
-        }.get(c["status"], "•")
-        buttons.append([InlineKeyboardButton(
-            f"{icon} #{c['id']}: {c['title'][:25]}",
-            callback_data=f"sponsor:campaign_detail:{c['id']}"
+        buttons.append([StyledButton(
+            f"{_status_icon(c['status'])} #{c['id']}: {c['title'][:25]}",
+            style="primary",
+            callback_data=f"sponsor:campaign_detail:{c['id']}",
         )])
-    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="sponsor:back")])
+    buttons.append([StyledButton(
+        "🔙 Back",
+        style="primary",
+        callback_data="sponsor:back",
+    )])
 
     try:
         await query.edit_message_text(
