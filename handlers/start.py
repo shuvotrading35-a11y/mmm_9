@@ -10,6 +10,7 @@ from database import get_session
 from keyboards.user_keyboards import main_menu_keyboard
 from middlewares.rate_limit_middleware import RateLimitMiddleware
 from services.user_service import UserService
+from utils.menu import send_menu
 
 log = structlog.get_logger(__name__)
 
@@ -77,9 +78,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"Use the menu below to navigate."
         )
 
-    await update.message.reply_text(
-        text,
-        parse_mode="HTML",
+    await send_menu(
+        update, context,
+        text=text,
         reply_markup=main_menu_keyboard(is_sponsor=is_sponsor),
     )
 
@@ -103,7 +104,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>Support:</b>\n"
         "Use 🆘 Support in the menu to create a ticket."
     )
-    await update.message.reply_text(text, parse_mode="HTML")
+    await send_menu(
+        update, context,
+        text=text,
+    )
 
 
 async def _is_user_sponsor(user_id: int) -> bool:
@@ -136,9 +140,9 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     user = update.effective_user
     is_sponsor = await _is_user_sponsor(user.id)
 
-    await update.message.reply_text(
-        "🏠 <b>Main Menu</b>",
-        parse_mode="HTML",
+    await send_menu(
+        update, context,
+        text="🏠 <b>Main Menu</b>",
         reply_markup=main_menu_keyboard(is_sponsor=is_sponsor),
     )
 
@@ -149,7 +153,8 @@ async def handle_user_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = update.effective_user
     is_sponsor = await _is_user_sponsor(user.id)
 
-    await update.message.reply_text(
-        "❌ Cancelled.",
+    await send_menu(
+        update, context,
+        text="❌ Cancelled.",
         reply_markup=main_menu_keyboard(is_sponsor=is_sponsor),
     )
