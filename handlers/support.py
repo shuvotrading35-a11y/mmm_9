@@ -3,8 +3,12 @@ Support Handler — ticket creation conversation.
 """
 import random
 import string
+import asyncio
+from typing import Optional
+
 import structlog
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram._utils.types import JSONDict
 from telegram.ext import (
     ContextTypes, ConversationHandler,
     MessageHandler, CommandHandler, CallbackQueryHandler, filters
@@ -19,12 +23,33 @@ log = structlog.get_logger(__name__)
 SELECT_CATEGORY, ENTER_SUBJECT, ENTER_MESSAGE = range(3)
 
 CATEGORIES = {
-    "PAYMENT": "💳 Payment",
-    "TASK": "📋 Task Issue",
+    "PAYMENT":    "💳 Payment",
+    "TASK":       "📋 Task Issue",
     "WITHDRAWAL": "💵 Withdrawal",
-    "REFERRAL": "🎁 Referral",
-    "OTHER": "❓ Other",
+    "REFERRAL":   "🎁 Referral",
+    "OTHER":      "❓ Other",
 }
+
+
+# ══════════════════════════════════════════════════════════════════
+# Styled button
+# ══════════════════════════════════════════════════════════════════
+# NOTE: move to keyboards/style.py and import everywhere.
+
+class StyledButton(InlineKeyboardButton):
+    """InlineKeyboardButton with an optional `style` field."""
+
+    __slots__ = ("_style",)
+
+    def __init__(self, text: str, style: Optional[str] = None, **kwargs):
+        super().__init__(text=text, **kwargs)
+        object.__setattr__(self, "_style", style)
+
+    def to_dict(self, recursive: bool = True) -> JSONDict:
+        data = super().to_dict(recursive=recursive)
+        if self._style:
+            data["style"] = self._style
+        return data
 
 
 def _gen_ticket_code() -> str:
@@ -41,10 +66,10 @@ async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return ConversationHandler.END
 
     buttons = [
-        [InlineKeyboardButton(label, callback_data=f"support_cat:{cat}")]
+        [StyledButton(label, style="primary", callback_data=f"support_cat:{cat}")]
         for cat, label in CATEGORIES.items()
     ]
-    buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="support_cancel")])
+    buttons.append([StyledButton("❌ Cancel", style="danger", callback_data="support_cancel")])
 
     await message.reply_text(
         "🆘 <b>SUPPORT</b>\n\n"
@@ -112,7 +137,6 @@ async def support_enter_message(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Notify admin
     from services.notification_service import NotificationService
-    import asyncio
     asyncio.create_task(
         NotificationService.notify_admin_critical(
             f"📩 New Support Ticket {ticket_code}\n"
