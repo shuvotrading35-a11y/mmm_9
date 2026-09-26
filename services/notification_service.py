@@ -18,7 +18,7 @@ class NotificationService:
     _bot: Optional[Bot] = None
 
     # ══════════════════════════════════════════════════════════════
-    # Bot injection (called from bot.py post_init)
+    # Bot injection
     # ══════════════════════════════════════════════════════════════
 
     @classmethod
@@ -26,7 +26,6 @@ class NotificationService:
         cls._bot = bot
         log.info("NotificationService: bot set")
 
-    # Aliases for compatibility
     @classmethod
     def init(cls, bot: Bot) -> None:
         cls.set_bot(bot)
@@ -41,7 +40,6 @@ class NotificationService:
 
     @classmethod
     def _ensure_bot(cls) -> Optional[Bot]:
-        """Return a Bot instance, lazily creating one if needed."""
         if cls._bot is not None:
             return cls._bot
         try:
@@ -65,7 +63,6 @@ class NotificationService:
         parse_mode: str = "HTML",
         reply_markup=None,
     ) -> bool:
-        """Send a message to a single user. Returns True on success."""
         bot = cls._ensure_bot()
         if bot is None:
             log.warning("NotificationService: no bot available", user_id=user_id)
@@ -86,7 +83,6 @@ class NotificationService:
             log.exception("send_to_user unexpected error", user_id=user_id)
             return False
 
-    # Aliases
     @classmethod
     async def send_message(cls, user_id: int, text: str, **kwargs) -> bool:
         return await cls.send_to_user(user_id, text, **kwargs)
@@ -101,7 +97,6 @@ class NotificationService:
 
     @classmethod
     async def notify_admin(cls, text: str, **kwargs) -> int:
-        """Send to all admins. Returns number of successful sends."""
         from config import settings
         if not settings.ADMIN_IDS:
             return 0
@@ -124,7 +119,6 @@ class NotificationService:
         language_code: Optional[str] = None,
         is_premium: bool = False,
     ) -> None:
-        """Notify all admins that a new user has registered."""
         name_parts = [first_name or "", last_name or ""]
         full_name = " ".join(p for p in name_parts if p).strip() or "—"
         username_str = f"@{username}" if username else "—"
@@ -153,7 +147,6 @@ class NotificationService:
     async def notify_admin_new_campaign(
         cls, campaign_id: int, title: str, sponsor_user_id: int
     ) -> None:
-        """Notify all admins about a new campaign awaiting approval."""
         text = (
             f"🆕 <b>New Campaign Submitted</b>\n\n"
             f"📌 ID: <b>#{campaign_id}</b>\n"
@@ -190,6 +183,22 @@ class NotificationService:
         )
         await cls.notify_admin(text)
 
+    # ── NEW ──────────────────────────────────────────────────────
+
+    @classmethod
+    async def notify_admin_large_withdrawal(
+        cls, user_id: int, amount, withdrawal_id: int
+    ) -> None:
+        """Alert admins about a large withdrawal request."""
+        from utils.decimal_utils import fmt_usdt
+        await cls.notify_admin(
+            f"🚨 <b>Large Withdrawal Request</b>\n\n"
+            f"📌 ID: <b>#WD{withdrawal_id:06d}</b>\n"
+            f"👤 User: <code>{user_id}</code>\n"
+            f"💵 Amount: <b>{fmt_usdt(amount)} USDT</b>\n\n"
+            f"Open /admin → 💳 Withdrawals to review."
+        )
+
     # ══════════════════════════════════════════════════════════════
     # Campaign lifecycle (sponsor-facing)
     # ══════════════════════════════════════════════════════════════
@@ -198,7 +207,6 @@ class NotificationService:
     async def campaign_approved(
         cls, sponsor_user_id: int, campaign_title: str
     ) -> None:
-        """Notify sponsor that their campaign was approved."""
         await cls.send_to_user(
             sponsor_user_id,
             f"✅ <b>Campaign Approved</b>\n\n"
@@ -250,7 +258,6 @@ class NotificationService:
     async def referral_joined(
         cls, referrer_user_id: int, reward: str
     ) -> None:
-        """Notify referrer that someone joined through their link."""
         await cls.send_to_user(
             referrer_user_id,
             f"🎁 <b>New Referral!</b>\n\n"
@@ -271,7 +278,7 @@ class NotificationService:
         )
 
     # ══════════════════════════════════════════════════════════════
-    # Balance / deposit / withdrawal (user-facing)
+    # Balance / deposit / withdrawal
     # ══════════════════════════════════════════════════════════════
 
     @classmethod
@@ -311,6 +318,22 @@ class NotificationService:
             f"💳 New balance: <b>{new_balance} USDT</b>",
         )
 
+    # ── NEW ──────────────────────────────────────────────────────
+
+    @classmethod
+    async def withdrawal_created(
+        cls, user_id: int, amount
+    ) -> None:
+        """Notify the user that their withdrawal request was submitted."""
+        from utils.decimal_utils import fmt_usdt
+        await cls.send_to_user(
+            user_id,
+            f"💳 <b>Withdrawal Submitted</b>\n\n"
+            f"💵 Amount: <b>{fmt_usdt(amount)} USDT</b>\n\n"
+            f"Your request is now pending processing.\n"
+            f"You'll be notified once it's approved.",
+        )
+
     @classmethod
     async def withdrawal_approved(
         cls, user_id: int, amount: str, wallet: str
@@ -337,7 +360,7 @@ class NotificationService:
         await cls.send_to_user(user_id, msg)
 
     # ══════════════════════════════════════════════════════════════
-    # Task / reward notifications
+    # Task / reward
     # ══════════════════════════════════════════════════════════════
 
     @classmethod
@@ -357,7 +380,6 @@ class NotificationService:
     async def task_reward_earned(
         cls, user_id: int, amount, new_balance, task_title: str = ""
     ) -> None:
-        """Alias that accepts Decimal/int/float — formats them safely."""
         from utils.decimal_utils import fmt_usdt
         await cls.task_reward(
             user_id=user_id,
@@ -409,12 +431,11 @@ class NotificationService:
         await cls.send_to_user(user_id, msg)
 
     # ══════════════════════════════════════════════════════════════
-    # Broadcast helper
+    # Broadcast
     # ══════════════════════════════════════════════════════════════
 
     @classmethod
     async def broadcast(cls, user_ids, text: str, delay: float = 0.05) -> dict:
-        """Send a message to many users. Returns {sent, failed}."""
         sent = 0
         failed = 0
         for uid in user_ids:
