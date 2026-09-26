@@ -64,8 +64,7 @@ class ForceJoinMiddleware:
         if now - last < ForceJoinMiddleware._COOLDOWN:
             # Already prompted recently — give quick feedback so the
             # button doesn't feel "stuck". For callback queries we can
-            # show a small toast; for plain text we stay silent (the
-            # previous prompt message is still visible above).
+            # show a small toast; for plain text we stay silent.
             try:
                 if update.callback_query:
                     await update.callback_query.answer(
@@ -78,12 +77,14 @@ class ForceJoinMiddleware:
 
         ForceJoinMiddleware._last_prompt[user.id] = now
 
-        # Build full prompt
+        # Build full prompt — number of missing channels shown
+        total = len(missing)
         keyboard = ForceJoinService.build_join_keyboard(missing)
         msg = (
-            "📢 <b>Join Required</b>\n\n"
-            "To use this bot, please join our official channel(s) first:\n\n"
-            "After joining, tap the button below to continue. ✅"
+            f"❌ <b>Must Join All Channels To Use The Bot</b>\n\n"
+            f"📌 You need to join <b>{total}</b> channel(s) below.\n"
+            f"👉 Tap each button, join the channel, then come back and "
+            f"tap <b>✅ Joined - Check</b>."
         )
 
         try:
