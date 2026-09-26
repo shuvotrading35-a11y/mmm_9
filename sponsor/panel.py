@@ -136,7 +136,7 @@ async def _get_sponsor(session, user_id: int):
     return await SponsorService.get_sponsor_by_user(session, user_id)
 
 
-# ══════════════════════════════════════════════════════════════════
+# # ══════════════════════════════════════════════════════════════════
 # Entry point — /sponsor command
 # ══════════════════════════════════════════════════════════════════
 
@@ -155,7 +155,11 @@ async def sponsor_panel_handler(update: Update, context: ContextTypes.DEFAULT_TY
                 "Apply to become a sponsor and run advertising campaigns.",
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📩 Apply as Sponsor", callback_data="sponsor:apply")],
+                    [StyledButton(
+                        "📩 Apply as Sponsor",
+                        style="success",
+                        callback_data="sponsor:apply",
+                    )],
                 ]),
             )
             return
@@ -220,8 +224,6 @@ async def sponsor_panel_handler(update: Update, context: ContextTypes.DEFAULT_TY
         parse_mode="HTML",
         reply_markup=sponsor_main_reply_keyboard(),
     )
-
-
 # ══════════════════════════════════════════════════════════════════
 # Reply keyboard handlers
 # ══════════════════════════════════════════════════════════════════
