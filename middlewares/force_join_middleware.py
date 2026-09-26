@@ -63,8 +63,7 @@ class ForceJoinMiddleware:
         last = ForceJoinMiddleware._last_prompt.get(user.id, 0)
         if now - last < ForceJoinMiddleware._COOLDOWN:
             # Already prompted recently — give quick feedback so the
-            # button doesn't feel "stuck". For callback queries we can
-            # show a small toast; for plain text we stay silent.
+            # button doesn't feel "stuck".
             try:
                 if update.callback_query:
                     await update.callback_query.answer(
@@ -77,11 +76,15 @@ class ForceJoinMiddleware:
 
         ForceJoinMiddleware._last_prompt[user.id] = now
 
-        # Build full prompt — number of missing channels shown
+        # Build full prompt
         total = len(missing)
         keyboard = ForceJoinService.build_join_keyboard(missing)
+
+        display_name = user.first_name or "Friend"
+
         msg = (
-            f"❌ <b>Must Join All Channels To Use The Bot</b>\n\n"
+            f"❌ <b>Must Join All Channels To Use The Bot & Unlock Tasks!</b>\n\n"
+            f"👋 Hey <b>{display_name}</b>,\n\n"
             f"📌 You need to join <b>{total}</b> channel(s) below.\n"
             f"👉 Tap each button, join the channel, then come back and "
             f"tap <b>✅ Joined - Check</b>."
@@ -93,13 +96,11 @@ class ForceJoinMiddleware:
                     msg, parse_mode="HTML", reply_markup=keyboard
                 )
             elif update.callback_query:
-                # For callbacks, try to edit in place first
                 try:
                     await update.callback_query.edit_message_text(
                         msg, parse_mode="HTML", reply_markup=keyboard
                     )
                 except Exception:
-                    # Fallback: send a fresh message
                     await update.callback_query.message.reply_text(
                         msg, parse_mode="HTML", reply_markup=keyboard
                     )
