@@ -18,7 +18,12 @@ from config import settings
 from database import init_db, close_db
 
 from handlers.start import cmd_start, cmd_help, handle_main_menu, handle_user_cancel
-from handlers.profile import handle_profile, profile_conv_handler
+from handlers.profile import (
+    handle_profile,
+    wallet_set_start,
+    back_to_main_menu,
+    wallet_input_router,
+)
 from handlers.tasks import (
     handle_tasks, handle_task_done, handle_task_skip, handle_task_next
 )
@@ -190,7 +195,7 @@ def build_application() -> Application:
     # ══════════════════════════════════════════════════════════
 
     # 1. Conversation handlers
-    app.add_handler(profile_conv_handler())
+    # NOTE: profile_conv_handler removed (wallet flow is now flag-based)
     app.add_handler(withdraw_conv_handler())
     app.add_handler(support_conv_handler())
 
@@ -242,7 +247,15 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.Regex(r"Close Admin Panel$"), admin_close_reply))
     app.add_handler(MessageHandler(filters.Regex(r"Cancel Admin$"), admin_cancel_reply))
 
-    # 5. Main menu reply buttons
+    # 5. Profile-specific reply buttons
+    app.add_handler(MessageHandler(
+        filters.Regex(r"^💳 Set/Update Wallet$"), wallet_set_start
+    ))
+    app.add_handler(MessageHandler(
+        filters.Regex(r"^🔙 Back to Main Menu$"), back_to_main_menu
+    ))
+
+    # 6. Main menu reply buttons
     app.add_handler(MessageHandler(filters.Regex(r"Profile$"), handle_profile))
     app.add_handler(MessageHandler(filters.Regex(r"Live Payments$"), handle_live_payments))
     app.add_handler(MessageHandler(filters.Regex(r"View Tasks$"), handle_tasks))
@@ -252,17 +265,22 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.Regex(r"Promotion$"), handle_promotion))
     app.add_handler(MessageHandler(filters.Regex(r"Support$"), handle_support_menu))
 
-    # 6. Navigation
+    # 7. Navigation
     app.add_handler(MessageHandler(filters.Regex(r"Main Menu$"), handle_main_menu))
     app.add_handler(MessageHandler(filters.Regex(r"^Cancel$"), handle_user_cancel))
 
     # ══════════════════════════════════════════════════════════
-    # 7. COMBINED free-text dispatcher — last in group 0
+    # 8. COMBINED free-text dispatcher — LAST in group 0
     # ══════════════════════════════════════════════════════════
     async def _combined_text_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message or not update.message.text:
             return
         text = update.message.text
+
+        # ── Wallet input takes priority when the flag is set ──
+        if context.user_data.get("awaiting_wallet"):
+            await wallet_input_router(update, context)
+            return
 
         if text.lower() in ("/cancel", "cancel"):
             has_state = any(
