@@ -177,10 +177,51 @@ class VerificationService:
             TaskType.CHANNEL_GROUP_JOIN,
             TaskType.FORCE_JOIN,
         ):
+            # ── Resolve chat_id from username if necessary ──
+            target_chat_id = campaign.telegram_chat_id
+            if not target_chat_id and campaign.telegram_username:
+                try:
+                    chat = await bot.get_chat(
+                        f"@{campaign.telegram_username.lstrip('@')}"
+                    )
+                    target_chat_id = chat.id
+                    # Persist it back so we don't re-resolve next time
+                    campaign.telegram_chat_id = target_chat_id
+                    await session.flush()
+                    log.info(
+                        "Resolved campaign chat_id from username",
+                        campaign_id=campaign_id,
+                        username=campaign.telegram_username,
+                        chat_id=target_chat_id,
+                    )
+                except Exception as e:
+                    log.warning(
+                        "Could not resolve channel username to chat_id",
+                        campaign_id=campaign_id,
+                        username=campaign.telegram_username,
+                        error=str(e),
+                    )
+                    return VerificationResult(
+                        success=False,
+                        reason=FailureReason.TELEGRAM_ERROR,
+                        campaign=campaign,
+                        user=user,
+                        error_message=f"Channel not accessible: {e}",
+                    )
+
+            if not target_chat_id:
+                return VerificationResult(
+                    success=False,
+                    reason=FailureReason.TELEGRAM_ERROR,
+                    campaign=campaign,
+                    user=user,
+                    error_message="Campaign has no chat_id or username",
+                )
+
             membership_result = await VerificationService._verify_membership(
                 bot=bot,
                 user_id=user_id,
-                chat_id=campaign.telegram_chat_id,
+                chat_id=target_chat_id,
             )
             if not membership_result["success"]:
                 return VerificationResult(
@@ -205,7 +246,7 @@ class VerificationService:
     async def _verify_membership(
         bot: Bot,
         user_id: int,
-        chat_id: int,
+        chat_id,
     ) -> dict:
         """Call Telegram API to check if user is a member of the chat."""
         try:
