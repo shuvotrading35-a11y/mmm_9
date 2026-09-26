@@ -43,10 +43,9 @@ def sponsor_main_reply_keyboard() -> ReplyKeyboardMarkup:
 def sponsor_task_type_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton("📢 Channel Join", style="primary")],
+            [KeyboardButton("📢 Channel Join", style="danger")],
             [KeyboardButton("👥 Group Join", style="primary")],
-            [KeyboardButton("🤖 Bot Start", style="primary")],
-            [KeyboardButton("📢👥 Channel + Group", style="primary")],
+            [KeyboardButton("📢👥 Channel + Group", style="success")],
             [KeyboardButton("❌ Cancel Sponsor", style="danger")],
         ],
         resize_keyboard=True,
