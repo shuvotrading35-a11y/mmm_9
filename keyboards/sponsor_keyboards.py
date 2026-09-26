@@ -3,12 +3,53 @@ Sponsor Keyboards — ReplyKeyboard (styled) for main menu,
 InlineKeyboard for per-campaign actions.
 Requires python-telegram-bot>=22.7.
 """
+from typing import Optional
+
 from telegram import (
     ReplyKeyboardMarkup,
     KeyboardButton,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
+from telegram._utils.types import JSONDict
+
+
+# ══════════════════════════════════════════════════════════════════
+# Styled buttons
+# ══════════════════════════════════════════════════════════════════
+# NOTE: move these two classes into a shared module
+# (e.g. keyboards/style.py) and import them in every keyboard file.
+
+class StyledButton(InlineKeyboardButton):
+    """InlineKeyboardButton with an optional `style` field."""
+
+    __slots__ = ("_style",)
+
+    def __init__(self, text: str, style: Optional[str] = None, **kwargs):
+        super().__init__(text=text, **kwargs)
+        object.__setattr__(self, "_style", style)
+
+    def to_dict(self, recursive: bool = True) -> JSONDict:
+        data = super().to_dict(recursive=recursive)
+        if self._style:
+            data["style"] = self._style
+        return data
+
+
+class StyledKeyboardButton(KeyboardButton):
+    """KeyboardButton with an optional `style` field for reply keyboards."""
+
+    __slots__ = ("_style",)
+
+    def __init__(self, text: str, style: Optional[str] = None, **kwargs):
+        super().__init__(text=text, **kwargs)
+        object.__setattr__(self, "_style", style)
+
+    def to_dict(self, recursive: bool = True) -> JSONDict:
+        data = super().to_dict(recursive=recursive)
+        if self._style:
+            data["style"] = self._style
+        return data
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -19,19 +60,19 @@ def sponsor_main_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton("➕ Create Campaign", style="primary"),
-                KeyboardButton("📋 My Campaigns", style="primary"),
+                StyledKeyboardButton("➕ Create Campaign", style="success"),
+                StyledKeyboardButton("📋 My Campaigns",   style="primary"),
             ],
             [
-                KeyboardButton("💰 Deposit USDT", style="success"),
-                KeyboardButton("📊 Analytics", style="primary"),
+                StyledKeyboardButton("💰 Deposit USDT", style="success"),
+                StyledKeyboardButton("📊 Analytics",    style="primary"),
             ],
             [
-                KeyboardButton("💼 Wallet Info", style="primary"),
-                KeyboardButton("🆘 Sponsor Support", style="primary"),
+                StyledKeyboardButton("💼 Wallet Info",      style="primary"),
+                StyledKeyboardButton("🆘 Sponsor Support",  style="primary"),
             ],
             [
-                KeyboardButton("🔙 Back to Main Menu", style="danger"),
+                StyledKeyboardButton("🔙 Back to Main Menu", style="danger"),
             ],
         ],
         resize_keyboard=True,
@@ -43,10 +84,10 @@ def sponsor_main_reply_keyboard() -> ReplyKeyboardMarkup:
 def sponsor_task_type_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton("📢 Channel Join", style="danger")],
-            [KeyboardButton("👥 Group Join", style="primary")],
-            [KeyboardButton("📢👥 Channel + Group", style="success")],
-            [KeyboardButton("❌ Cancel Sponsor", style="danger")],
+            [StyledKeyboardButton("📢 Channel Join",       style="primary")],
+            [StyledKeyboardButton("👥 Group Join",         style="primary")],
+            [StyledKeyboardButton("📢👥 Channel + Group",  style="success")],
+            [StyledKeyboardButton("❌ Cancel Sponsor",     style="danger")],
         ],
         resize_keyboard=True,
         one_time_keyboard=True,
@@ -58,14 +99,14 @@ def sponsor_duration_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton("1 Day", style="primary"),
-                KeyboardButton("3 Days", style="primary"),
+                StyledKeyboardButton("1 Day",  style="primary"),
+                StyledKeyboardButton("3 Days", style="primary"),
             ],
             [
-                KeyboardButton("7 Days", style="primary"),
-                KeyboardButton("30 Days", style="primary"),
+                StyledKeyboardButton("7 Days",  style="primary"),
+                StyledKeyboardButton("30 Days", style="primary"),
             ],
-            [KeyboardButton("❌ Cancel Sponsor", style="danger")],
+            [StyledKeyboardButton("❌ Cancel Sponsor", style="danger")],
         ],
         resize_keyboard=True,
         one_time_keyboard=True,
@@ -75,7 +116,7 @@ def sponsor_duration_reply_keyboard() -> ReplyKeyboardMarkup:
 
 def sponsor_cancel_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton("❌ Cancel Sponsor", style="danger")]],
+        keyboard=[[StyledKeyboardButton("❌ Cancel Sponsor", style="danger")]],
         resize_keyboard=True,
         one_time_keyboard=True,
     )
@@ -85,8 +126,8 @@ def sponsor_back_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton("🔙 Back to Sponsor Panel", style="primary"),
-                KeyboardButton("🏠 Main Menu", style="primary"),
+                StyledKeyboardButton("🔙 Back to Sponsor Panel", style="primary"),
+                StyledKeyboardButton("🏠 Main Menu",             style="primary"),
             ],
         ],
         resize_keyboard=True,
@@ -104,38 +145,44 @@ def campaign_actions_keyboard(campaign_id: int, status: str) -> InlineKeyboardMa
     s = (status or "").upper()
 
     if s == "PENDING_FUNDING":
-        buttons.append([InlineKeyboardButton(
+        buttons.append([StyledButton(
             "💰 Fund Campaign",
-            callback_data=f"sponsor:fund:{campaign_id}"
+            style="success",
+            callback_data=f"sponsor:fund:{campaign_id}",
         )])
 
     if s == "ACTIVE":
-        buttons.append([InlineKeyboardButton(
+        buttons.append([StyledButton(
             "⏸ Pause",
-            callback_data=f"sponsor:pause:{campaign_id}"
+            style="danger",
+            callback_data=f"sponsor:pause:{campaign_id}",
         )])
 
     if s == "PAUSED":
-        buttons.append([InlineKeyboardButton(
+        buttons.append([StyledButton(
             "▶️ Resume",
-            callback_data=f"sponsor:resume:{campaign_id}"
+            style="success",
+            callback_data=f"sponsor:resume:{campaign_id}",
         )])
 
-    buttons.append([InlineKeyboardButton(
+    buttons.append([StyledButton(
         "📊 Analytics",
-        callback_data=f"sponsor:analytics:{campaign_id}"
+        style="primary",
+        callback_data=f"sponsor:analytics:{campaign_id}",
     )])
 
     # Delete button — not available for completed campaigns
     if s != "COMPLETED":
-        buttons.append([InlineKeyboardButton(
+        buttons.append([StyledButton(
             "🗑 Delete Campaign",
-            callback_data=f"sponsor:delete_prompt:{campaign_id}"
+            style="danger",
+            callback_data=f"sponsor:delete_prompt:{campaign_id}",
         )])
 
-    buttons.append([InlineKeyboardButton(
+    buttons.append([StyledButton(
         "🔙 Back",
-        callback_data="sponsor:campaigns"
+        style="primary",
+        callback_data="sponsor:campaigns",
     )])
 
     return InlineKeyboardMarkup(buttons)
@@ -145,12 +192,14 @@ def campaign_delete_confirm_keyboard(campaign_id: int) -> InlineKeyboardMarkup:
     """Confirmation keyboard before deleting a campaign."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(
+            StyledButton(
                 "✅ Yes, Delete",
+                style="danger",
                 callback_data=f"sponsor:delete_confirm:{campaign_id}",
             ),
-            InlineKeyboardButton(
+            StyledButton(
                 "❌ Cancel",
+                style="success",
                 callback_data=f"sponsor:campaign_detail:{campaign_id}",
             ),
         ],
@@ -160,7 +209,7 @@ def campaign_delete_confirm_keyboard(campaign_id: int) -> InlineKeyboardMarkup:
 def deposit_submitted_keyboard() -> InlineKeyboardMarkup:
     """After tx hash submitted."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back to Panel", callback_data="sponsor:back")],
+        [StyledButton("🔙 Back to Panel", style="primary", callback_data="sponsor:back")],
     ])
 
 
