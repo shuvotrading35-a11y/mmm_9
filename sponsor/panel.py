@@ -383,7 +383,7 @@ async def sponsor_task_type_reply(update: Update, context: ContextTypes.DEFAULT_
     type_map = {
         "📢 Channel Join": "CHANNEL_JOIN",
         "👥 Group Join": "GROUP_JOIN",
-        "🤖 Bot Start": "BOT_START",
+        
         "📢👥 Channel + Group": "CHANNEL_GROUP_JOIN",
     }
     task_type = type_map.get(text)
