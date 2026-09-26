@@ -1,8 +1,11 @@
 """
 Referral Handler — show referral link and stats.
 """
+from typing import Optional
+
 import structlog
-from telegram import Update
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram._utils.types import JSONDict
 from telegram.ext import ContextTypes
 
 from config import settings
@@ -10,6 +13,27 @@ from database import get_session
 from utils.decimal_utils import fmt_usdt
 
 log = structlog.get_logger(__name__)
+
+
+# ══════════════════════════════════════════════════════════════════
+# Styled button
+# ══════════════════════════════════════════════════════════════════
+# NOTE: move to keyboards/style.py and import everywhere.
+
+class StyledButton(InlineKeyboardButton):
+    """InlineKeyboardButton with an optional `style` field."""
+
+    __slots__ = ("_style",)
+
+    def __init__(self, text: str, style: Optional[str] = None, **kwargs):
+        super().__init__(text=text, **kwargs)
+        object.__setattr__(self, "_style", style)
+
+    def to_dict(self, recursive: bool = True) -> JSONDict:
+        data = super().to_dict(recursive=recursive)
+        if self._style:
+            data["style"] = self._style
+        return data
 
 
 async def handle_referral(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -44,9 +68,8 @@ async def handle_referral(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"💎 Total Earned: <b>{fmt_usdt(ref_stats['signup_rewards'] + ref_stats['commission_earned'])} USDT</b>"
     )
 
-    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📤 Share Link", switch_inline_query=ref_link)],
+        [StyledButton("📤 Share Link", style="success", switch_inline_query=ref_link)],
     ])
 
     if update.message:
