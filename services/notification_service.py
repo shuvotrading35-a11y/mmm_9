@@ -108,6 +108,16 @@ class NotificationService:
         return sent
 
     @classmethod
+    async def notify_admin_critical(cls, text: str, **kwargs) -> int:
+        """Send a critical alert to all admins."""
+        header = "🚨 <b>CRITICAL ALERT</b>\n\n"
+        if text.lstrip().startswith("🚨"):
+            full_text = text
+        else:
+            full_text = header + text
+        return await cls.notify_admin(full_text, **kwargs)
+
+    @classmethod
     async def notify_admin_new_user(
         cls,
         user_id: int,
@@ -183,13 +193,10 @@ class NotificationService:
         )
         await cls.notify_admin(text)
 
-    # ── NEW ──────────────────────────────────────────────────────
-
     @classmethod
     async def notify_admin_large_withdrawal(
         cls, user_id: int, amount, withdrawal_id: int
     ) -> None:
-        """Alert admins about a large withdrawal request."""
         from utils.decimal_utils import fmt_usdt
         await cls.notify_admin(
             f"🚨 <b>Large Withdrawal Request</b>\n\n"
@@ -197,6 +204,38 @@ class NotificationService:
             f"👤 User: <code>{user_id}</code>\n"
             f"💵 Amount: <b>{fmt_usdt(amount)} USDT</b>\n\n"
             f"Open /admin → 💳 Withdrawals to review."
+        )
+
+    # ── Support ──────────────────────────────────────────────────
+
+    @classmethod
+    async def notify_admin_support_message(
+        cls,
+        user_id: int,
+        username: Optional[str],
+        message_text: str,
+        ticket_id: Optional[int] = None,
+    ) -> int:
+        """Notify admins about a new support message."""
+        username_str = f"@{username}" if username else "—"
+        ticket_line = f"\n🎫 Ticket: <b>#{ticket_id}</b>" if ticket_id else ""
+        body = message_text[:800] + ("…" if len(message_text) > 800 else "")
+
+        text = (
+            f"🆘 <b>New Support Message</b>\n\n"
+            f"👤 User: <code>{user_id}</code> ({username_str})"
+            f"{ticket_line}\n\n"
+            f"💬 Message:\n{body}"
+        )
+        return await cls.notify_admin(text)
+
+    @classmethod
+    async def support_reply_to_user(
+        cls, user_id: int, message_text: str
+    ) -> bool:
+        return await cls.send_to_user(
+            user_id,
+            f"🆘 <b>Support Reply</b>\n\n{message_text}",
         )
 
     # ══════════════════════════════════════════════════════════════
@@ -318,13 +357,10 @@ class NotificationService:
             f"💳 New balance: <b>{new_balance} USDT</b>",
         )
 
-    # ── NEW ──────────────────────────────────────────────────────
-
     @classmethod
     async def withdrawal_created(
         cls, user_id: int, amount
     ) -> None:
-        """Notify the user that their withdrawal request was submitted."""
         from utils.decimal_utils import fmt_usdt
         await cls.send_to_user(
             user_id,
