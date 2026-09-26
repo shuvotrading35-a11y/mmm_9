@@ -15,14 +15,47 @@ from models.force_join import ForceJoinChannel
 log = structlog.get_logger(__name__)
 
 
+def _resolve_join_url(ch: ForceJoinChannel):
+    """Return a usable URL for a channel, or None."""
+    if ch.invite_url:
+        return ch.invite_url
+    if ch.username:
+        return f"https://t.me/{ch.username.lstrip('@')}"
+    return None
+
+
+def _numbered_rows(missing_channels: List[ForceJoinChannel]) -> list:
+    """
+    Build rows of inline buttons, 2 per row.
+    Label: '📢 Join Channel N' or uses title if present (truncated).
+    """
+    url_buttons = []
+    for idx, ch in enumerate(missing_channels, start=1):
+        url = _resolve_join_url(ch)
+        if not url:
+            continue
+
+        title = getattr(ch, "title", None)
+        if title:
+            short = title[:18] + ("…" if len(title) > 18 else "")
+            label = f"📢 {short}"
+        else:
+            label = f"📢 Join Channel {idx}"
+
+        url_buttons.append(InlineKeyboardButton(label, url=url))
+
+    # 2 buttons per row
+    rows = [url_buttons[i:i + 2] for i in range(0, len(url_buttons), 2)]
+    return rows
+
+
 class ForceJoinService:
 
     # In-memory dedupe: user_id → last notified timestamp (seconds)
-    # Prevents spamming the same user every job run.
     _last_notified: dict = {}
 
     # ══════════════════════════════════════════════════════════════
-    # Core membership checks (used by middleware + button handler)
+    # Core membership checks
     # ══════════════════════════════════════════════════════════════
 
     @staticmethod
@@ -67,23 +100,19 @@ class ForceJoinService:
 
     @staticmethod
     def build_join_keyboard(missing_channels: List[ForceJoinChannel]) -> InlineKeyboardMarkup:
-        """Build inline keyboard with join buttons for each missing channel."""
-        buttons = []
-        for ch in missing_channels:
-            if ch.invite_url:
-                url = ch.invite_url
-            elif ch.username:
-                url = f"https://t.me/{ch.username.lstrip('@')}"
-            else:
-                continue
-            buttons.append([InlineKeyboardButton(
-                f"📢 Join Channel", url=url
-            )])
-        buttons.append([InlineKeyboardButton(
-            "✅ I've Joined — Check Again",
-            callback_data="force_join_check"
+        """
+        Build numbered join keyboard (2 per row) with a check button at the bottom.
+
+          [📢 Join Channel 1] [📢 Join Channel 2]
+          [📢 Join Channel 3]
+          [✅ Joined - Check]
+        """
+        rows = _numbered_rows(missing_channels)
+        rows.append([InlineKeyboardButton(
+            "✅ Joined - Check",
+            callback_data="force_join_check",
         )])
-        return InlineKeyboardMarkup(buttons)
+        return InlineKeyboardMarkup(rows)
 
     # ══════════════════════════════════════════════════════════════
     # Periodic background check (APScheduler job)
@@ -94,9 +123,6 @@ class ForceJoinService:
         """
         Background job: scan all active users, verify force-join membership,
         and notify those who have left any required channel.
-
-        Called from bot.py on a schedule (e.g. every 6 hours).
-        Returns a summary dict.
         """
         import time
         from database import get_session
@@ -146,7 +172,6 @@ class ForceJoinService:
                         chat_id=ch.chat_id,
                         error=str(e),
                     )
-                    # On error, don't block — continue
                     continue
 
             if not missing_channels:
@@ -160,7 +185,6 @@ class ForceJoinService:
             if now - last < 6 * 3600:
                 continue
 
-            # Send combined notice
             try:
                 await bot.send_message(
                     chat_id=user_id,
@@ -171,14 +195,12 @@ class ForceJoinService:
                 ForceJoinService._last_notified[user_id] = now
                 notified += 1
             except Exception as e:
-                # User blocked the bot, or other send error
                 log.debug(
                     "Could not send force-join warning",
                     user_id=user_id,
                     error=str(e),
                 )
 
-            # Gentle rate limit — avoid Telegram 429
             await asyncio.sleep(0.05)
 
         elapsed = time.time() - started
@@ -196,45 +218,34 @@ class ForceJoinService:
 
     @staticmethod
     def _build_violation_message(missing_channels: List[ForceJoinChannel]) -> str:
-        """Human-readable HTML message listing all missing channels."""
+        """Human-readable HTML message listing all missing channels with counts."""
+        total = len(missing_channels)
         names = []
-        for ch in missing_channels:
+        for idx, ch in enumerate(missing_channels, start=1):
             if ch.username:
-                names.append(f"@{ch.username}")
+                names.append(f"{idx}. @{ch.username}")
             elif getattr(ch, "title", None):
-                names.append(ch.title)
+                names.append(f"{idx}. {ch.title}")
             else:
-                names.append(str(ch.chat_id))
+                names.append(f"{idx}. {ch.chat_id}")
 
         joined = "\n".join(f"• <b>{n}</b>" for n in names)
 
         return (
             f"⚠️ <b>Channel Membership Required</b>\n\n"
-            f"We noticed you have left one or more required channels:\n\n"
+            f"📌 You need to re-join <b>{total}</b> channel(s):\n\n"
             f"{joined}\n\n"
-            f"Please re-join to continue using this bot. "
-            f"Tap the button(s) below to join, then press ✅ Check."
+            f"Tap the button(s) below, then press ✅ Check."
         )
 
     @staticmethod
     def _build_violation_keyboard(
         missing_channels: List[ForceJoinChannel],
     ) -> InlineKeyboardMarkup:
-        """Re-join buttons for all missing channels, plus a check button."""
-        buttons = []
-        for ch in missing_channels:
-            url = None
-            if ch.invite_url:
-                url = ch.invite_url
-            elif ch.username:
-                url = f"https://t.me/{ch.username.lstrip('@')}"
-            if not url:
-                continue
-            label = f"📢 Join @{ch.username}" if ch.username else "📢 Join Channel"
-            buttons.append([InlineKeyboardButton(label[:50], url=url)])
-
-        buttons.append([InlineKeyboardButton(
-            "✅ I've Joined — Check Again",
+        """Numbered re-join buttons (2 per row) + a check button."""
+        rows = _numbered_rows(missing_channels)
+        rows.append([InlineKeyboardButton(
+            "✅ Joined - Check",
             callback_data="force_join_check",
         )])
-        return InlineKeyboardMarkup(buttons)
+        return InlineKeyboardMarkup(rows)
