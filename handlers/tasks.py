@@ -1,13 +1,18 @@
 """
 Tasks Handler — browse tasks, verify completion, skip.
+Uses single-message menu pattern; supports optional banner image.
 """
 import asyncio
+from pathlib import Path
+
 import structlog
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from database import get_session
-from keyboards.user_keyboards import task_keyboard, task_no_join_keyboard, main_menu_keyboard
+from keyboards.user_keyboards import (
+    task_keyboard, task_no_join_keyboard, main_menu_keyboard,
+)
 from middlewares.rate_limit_middleware import RateLimitMiddleware
 from services.task_service import TaskService
 from services.verification_service import VerificationService, FailureReason
@@ -15,8 +20,12 @@ from services.reward_service import RewardService
 from services.notification_service import NotificationService
 from utils.decimal_utils import fmt_usdt
 from utils.time_utils import time_until
+from utils.menu import send_menu
 
 log = structlog.get_logger(__name__)
+
+# Task banner path — file at: <project_root>/assets/task_banner.jpg
+TASK_BANNER_PATH = Path(__file__).resolve().parent.parent / "assets" / "task_banner.jpg"
 
 
 def _build_task_text(campaign) -> str:
@@ -51,15 +60,12 @@ def _build_task_text(campaign) -> str:
 
 
 async def handle_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show the next available task to the user."""
+    """Show the next available task (auto-deletes previous menu message)."""
     user = update.effective_user
-
-    # Determine how to respond
     is_message = bool(update.message)
-    message_target = update.message or update.callback_query.message
 
     async with get_session() as session:
-        # Force-join check
+        # Force-join check on incoming message only
         if is_message:
             from middlewares.force_join_middleware import ForceJoinMiddleware
             passed = await ForceJoinMiddleware.check(update, context)
@@ -78,22 +84,27 @@ async def handle_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         else:
             count = 0
 
+    # ══════════════════════════════════════════════════════════════
+    # No tasks available
+    # ══════════════════════════════════════════════════════════════
     if not campaign:
         text = (
             "📋 <b>No Tasks Available</b>\n\n"
-            "You've completed all available tasks or there are no active campaigns right now.\n\n"
+            "You've completed all available tasks or there are no active "
+            "campaigns right now.\n\n"
             "Check back later — new tasks are added regularly! 🚀"
         )
-        if is_message:
-            await update.message.reply_text(text, parse_mode="HTML")
-        else:
-            try:
-                await update.callback_query.edit_message_text(text, parse_mode="HTML")
-            except Exception:
-                await update.callback_query.message.reply_text(text, parse_mode="HTML")
+        await send_menu(
+            update, context,
+            text=text,
+            reply_markup=main_menu_keyboard(),
+            photo_path=TASK_BANNER_PATH,
+        )
         return
 
-    # Build join URL
+    # ══════════════════════════════════════════════════════════════
+    # Show task
+    # ══════════════════════════════════════════════════════════════
     join_url = None
     if campaign.invite_url:
         join_url = campaign.invite_url
@@ -110,22 +121,19 @@ async def handle_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         else task_no_join_keyboard(campaign.id)
     )
 
-    if is_message:
-        await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
-    else:
-        try:
-            await update.callback_query.edit_message_text(
-                text, parse_mode="HTML", reply_markup=keyboard
-            )
-        except Exception:
-            # Fallback if edit fails (e.g. same content)
-            await update.callback_query.message.reply_text(
-                text, parse_mode="HTML", reply_markup=keyboard
-            )
+    await send_menu(
+        update, context,
+        text=text,
+        reply_markup=keyboard,
+        photo_path=TASK_BANNER_PATH,
+    )
 
 
 async def handle_task_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """User pressed DONE — verify membership and award reward."""
+    """User pressed DONE — verify membership and award reward.
+
+    Uses inline edit (in place) so the same photo stays; only caption updates.
+    """
     query = update.callback_query
     await query.answer("⏳ Verifying...")
 
@@ -166,16 +174,13 @@ async def handle_task_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             err = getattr(verification, "error_message", None) or "Unknown error"
             msg = f"❌ Verification failed: {err}"
 
-        # Record failed verify for analytics
         if reason == FailureReason.NOT_MEMBER:
             async with get_session() as session:
                 await TaskService.record_failed_verify(session, campaign_id)
                 await session.commit()
 
-        try:
-            await query.edit_message_text(msg, parse_mode="HTML")
-        except Exception:
-            await query.message.reply_text(msg, parse_mode="HTML")
+        # Edit caption in place (keep the photo)
+        await _edit_caption_or_text(query, msg)
         return
 
     # Execute reward atomically
@@ -194,13 +199,11 @@ async def handle_task_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 new_balance = db_user.balance
                 reward_amount = completion.reward_amount
 
-                # Snapshot for post-commit use
                 _user_id = user.id
                 _campaign_id = campaign_id
                 _reward = reward_amount
                 _balance = new_balance
 
-        # Notify user via separate message
         asyncio.create_task(
             NotificationService.task_reward_earned(
                 user_id=_user_id,
@@ -209,7 +212,6 @@ async def handle_task_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             )
         )
 
-        # Pay referral commission — separate task with its own session
         asyncio.create_task(
             _pay_referral_commission_task(
                 referred_user_id=_user_id,
@@ -218,12 +220,12 @@ async def handle_task_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             )
         )
 
-        await query.edit_message_text(
+        await _edit_caption_or_text(
+            query,
             f"✅ <b>Task Completed!</b>\n\n"
             f"🎁 You earned: <b>{fmt_usdt(_reward)} USDT</b>\n"
             f"💰 New Balance: <b>{fmt_usdt(_balance)} USDT</b>\n\n"
             f"Use /tasks to find more tasks!",
-            parse_mode="HTML",
         )
 
     except Exception as e:
@@ -233,13 +235,29 @@ async def handle_task_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             campaign_id=campaign_id,
             error=str(e),
         )
-        try:
-            await query.edit_message_text(
-                "❌ An error occurred while processing your reward. Please try again.",
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
+        await _edit_caption_or_text(
+            query,
+            "❌ An error occurred while processing your reward. Please try again.",
+        )
+
+
+async def _edit_caption_or_text(query, text: str) -> None:
+    """Edit inline message in place — try caption first, then text."""
+    try:
+        await query.edit_message_caption(caption=text, parse_mode="HTML")
+        return
+    except Exception:
+        pass
+    try:
+        await query.edit_message_text(text, parse_mode="HTML")
+        return
+    except Exception:
+        pass
+    # Fallback — send a small new message
+    try:
+        await query.message.reply_text(text, parse_mode="HTML")
+    except Exception:
+        pass
 
 
 async def _pay_referral_commission_task(
@@ -247,9 +265,7 @@ async def _pay_referral_commission_task(
     campaign_id: int,
     task_reward_amount,
 ) -> None:
-    """
-    Runs in its own session — safe to fire-and-forget.
-    """
+    """Runs in its own session — safe to fire-and-forget."""
     try:
         async with get_session() as session:
             async with session.begin():
@@ -278,7 +294,7 @@ async def handle_task_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await TaskService.record_skip(session, user.id, campaign_id)
         await session.commit()
 
-    # Show next task — this will overwrite the current message
+    # Show next task — send_menu will edit the existing message in place
     await handle_tasks(update, context)
 
 
