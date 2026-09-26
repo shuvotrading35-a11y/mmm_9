@@ -7,19 +7,43 @@ We use this to notify users who leave a required channel.
 ⚠️ The bot MUST be an admin in the channel with the
    "Manage Chat" (can_manage_chat) permission.
 """
+from typing import Optional
+
 import structlog
 
 from telegram import (
     Update,
     ChatMemberUpdated,
-    InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InlineKeyboardButton,
 )
+from telegram._utils.types import JSONDict
 from telegram.ext import ContextTypes
 
 from database import get_session
 
 log = structlog.get_logger(__name__)
+
+
+# ══════════════════════════════════════════════════════════════════
+# Styled button
+# ══════════════════════════════════════════════════════════════════
+# NOTE: move to keyboards/style.py and import everywhere.
+
+class StyledButton(InlineKeyboardButton):
+    """InlineKeyboardButton with an optional `style` field."""
+
+    __slots__ = ("_style",)
+
+    def __init__(self, text: str, style: Optional[str] = None, **kwargs):
+        super().__init__(text=text, **kwargs)
+        object.__setattr__(self, "_style", style)
+
+    def to_dict(self, recursive: bool = True) -> JSONDict:
+        data = super().to_dict(recursive=recursive)
+        if self._style:
+            data["style"] = self._style
+        return data
 
 
 def _was_member(status: str) -> bool:
@@ -36,13 +60,19 @@ def _build_rejoin_keyboard(fj) -> InlineKeyboardMarkup:
     if fj.invite_url:
         url = fj.invite_url
     elif fj.username:
-        url = f"https://t.me/{fj.username.lstrip('@')}"
+        # removeprefix("@") — lstrip("@") would strip ANY leading '@'
+        url = f"https://t.me/{fj.username.removeprefix('@')}"
 
     if url:
-        buttons.append([InlineKeyboardButton("📢 Re-join Channel", url=url)])
+        buttons.append([StyledButton(
+            "📢 Re-join Channel",
+            style="success",
+            url=url,
+        )])
 
-    buttons.append([InlineKeyboardButton(
+    buttons.append([StyledButton(
         "✅ I've Joined — Check Again",
+        style="primary",
         callback_data="force_join_check",
     )])
     return InlineKeyboardMarkup(buttons)
