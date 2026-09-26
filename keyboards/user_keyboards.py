@@ -1,17 +1,14 @@
 """
-User Keyboards — ReplyKeyboard (styled) and InlineKeyboard builders.
-ReplyKeyboard styles require python-telegram-bot>=22.7.
+User Keyboards — ReplyKeyboard and InlineKeyboard builders for regular users.
 """
 from telegram import (
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton,
 )
 
 
 # ══════════════════════════════════════════════════════════════════
-# Reply keyboards — main menu (styled)
+# Reply keyboards
 # ══════════════════════════════════════════════════════════════════
 
 def main_menu_keyboard(is_sponsor: bool = False) -> ReplyKeyboardMarkup:
@@ -34,12 +31,10 @@ def main_menu_keyboard(is_sponsor: bool = False) -> ReplyKeyboardMarkup:
             KeyboardButton("🆘 Support", style="primary"),
         ],
     ]
-
     if is_sponsor:
         keyboard.append([
             KeyboardButton("💼 Sponsor Panel", style="primary"),
         ])
-
     return ReplyKeyboardMarkup(
         keyboard=keyboard,
         resize_keyboard=True,
@@ -48,8 +43,21 @@ def main_menu_keyboard(is_sponsor: bool = False) -> ReplyKeyboardMarkup:
     )
 
 
+def profile_keyboard() -> ReplyKeyboardMarkup:
+    """Profile screen's own reply keyboard."""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton("💳 Set/Update Wallet", style="success")],
+            [KeyboardButton("🔙 Back to Main Menu", style="primary")],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Choose an option...",
+    )
+
+
 def user_cancel_reply_keyboard() -> ReplyKeyboardMarkup:
-    """Cancel reply keyboard — for input steps (wallet, amount, etc.)."""
+    """Reply keyboard with just a Cancel button (for input steps)."""
     return ReplyKeyboardMarkup(
         keyboard=[
             [
@@ -58,12 +66,11 @@ def user_cancel_reply_keyboard() -> ReplyKeyboardMarkup:
             ],
         ],
         resize_keyboard=True,
-        one_time_keyboard=False,
     )
 
 
 def user_back_reply_keyboard() -> ReplyKeyboardMarkup:
-    """Back to main menu."""
+    """Reply keyboard with just a Back-to-Main button."""
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton("🏠 Main Menu", style="primary")],
@@ -74,12 +81,10 @@ def user_back_reply_keyboard() -> ReplyKeyboardMarkup:
 
 
 # ══════════════════════════════════════════════════════════════════
-# Inline keyboards — tasks, withdraw, etc.
-# (style doesn't apply to inline; use color emoji + primary text)
+# Inline keyboards
 # ══════════════════════════════════════════════════════════════════
 
 def task_keyboard(campaign_id: int, join_url: str) -> InlineKeyboardMarkup:
-    """Task action buttons with a join URL."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔗 JOIN", url=join_url)],
         [
@@ -91,7 +96,6 @@ def task_keyboard(campaign_id: int, join_url: str) -> InlineKeyboardMarkup:
 
 
 def task_no_join_keyboard(campaign_id: int) -> InlineKeyboardMarkup:
-    """Task buttons when no join URL is available."""
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✅ DONE", callback_data=f"task_done:{campaign_id}"),
@@ -117,6 +121,7 @@ def live_payments_keyboard() -> InlineKeyboardMarkup:
 
 
 def cancel_keyboard(callback_data: str = "cancel") -> InlineKeyboardMarkup:
+    """Inline keyboard with a Cancel button."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("❌ Cancel", callback_data=callback_data)]
     ])
