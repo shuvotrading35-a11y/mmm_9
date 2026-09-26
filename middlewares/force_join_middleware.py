@@ -1,15 +1,20 @@
 """
 Force Join Middleware — mandatory channel membership gate.
+Sends a banner image with the join prompt when configured.
 """
 import time
+from pathlib import Path
 
 import structlog
-from telegram import Update
+from telegram import Update, InputFile
 from telegram.ext import ContextTypes
 
 from config import settings
 
 log = structlog.get_logger(__name__)
+
+# Banner path — file must exist at: <project_root>/assets/force_join_banner.jpg
+BANNER_PATH = Path(__file__).resolve().parent.parent / "assets" / "force_join_banner.jpg"
 
 
 class ForceJoinMiddleware:
@@ -54,16 +59,13 @@ class ForceJoinMiddleware:
             )
 
         if all_joined:
-            # Clear cooldown so a future leave triggers prompt instantly
             ForceJoinMiddleware._last_prompt.pop(user.id, None)
             return True
 
-        # ── Rate limit: don't spam the same user ──
+        # ── Rate limit ──
         now = time.time()
         last = ForceJoinMiddleware._last_prompt.get(user.id, 0)
         if now - last < ForceJoinMiddleware._COOLDOWN:
-            # Already prompted recently — give quick feedback so the
-            # button doesn't feel "stuck".
             try:
                 if update.callback_query:
                     await update.callback_query.answer(
@@ -76,13 +78,12 @@ class ForceJoinMiddleware:
 
         ForceJoinMiddleware._last_prompt[user.id] = now
 
-        # Build full prompt
+        # Build prompt content
         total = len(missing)
         keyboard = ForceJoinService.build_join_keyboard(missing)
-
         display_name = user.first_name or "Friend"
 
-        msg = (
+        caption = (
             f"❌ <b>Must Join All Channels To Use The Bot & Unlock Tasks!</b>\n\n"
             f"👋 Hey <b>{display_name}</b>,\n\n"
             f"📌 You need to join <b>{total}</b> channel(s) below.\n"
@@ -90,20 +91,51 @@ class ForceJoinMiddleware:
             f"tap <b>✅ Joined - Check</b>."
         )
 
+        photo_ok = BANNER_PATH.exists()
+
+        if not photo_ok:
+            log.warning(
+                "Force-join banner not found, falling back to text",
+                path=str(BANNER_PATH),
+            )
+
         try:
             if update.message:
-                await update.message.reply_text(
-                    msg, parse_mode="HTML", reply_markup=keyboard
-                )
+                # ── Plain message ──
+                if photo_ok:
+                    with open(BANNER_PATH, "rb") as f:
+                        await update.message.reply_photo(
+                            photo=InputFile(f, filename="force_join.jpg"),
+                            caption=caption,
+                            parse_mode="HTML",
+                            reply_markup=keyboard,
+                        )
+                else:
+                    await update.message.reply_text(
+                        caption, parse_mode="HTML", reply_markup=keyboard
+                    )
+
             elif update.callback_query:
-                try:
-                    await update.callback_query.edit_message_text(
-                        msg, parse_mode="HTML", reply_markup=keyboard
-                    )
-                except Exception:
-                    await update.callback_query.message.reply_text(
-                        msg, parse_mode="HTML", reply_markup=keyboard
-                    )
+                # ── Callback — send fresh photo instead of editing ──
+                # Editing an existing text message into a photo is not supported,
+                # so we just send a new photo with the prompt.
+                if photo_ok:
+                    with open(BANNER_PATH, "rb") as f:
+                        await update.callback_query.message.reply_photo(
+                            photo=InputFile(f, filename="force_join.jpg"),
+                            caption=caption,
+                            parse_mode="HTML",
+                            reply_markup=keyboard,
+                        )
+                else:
+                    try:
+                        await update.callback_query.edit_message_text(
+                            caption, parse_mode="HTML", reply_markup=keyboard
+                        )
+                    except Exception:
+                        await update.callback_query.message.reply_text(
+                            caption, parse_mode="HTML", reply_markup=keyboard
+                        )
         except Exception:
             log.exception("Failed to send force-join prompt", user_id=user.id)
 
