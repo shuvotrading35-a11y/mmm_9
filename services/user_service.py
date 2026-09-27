@@ -4,6 +4,7 @@ User Service — registration, profile management, referral chain setup.
 import asyncio
 import secrets
 import string
+from decimal import Decimal
 from typing import Optional, Tuple
 
 import structlog
@@ -36,20 +37,78 @@ class UserService:
         """
         Get existing user or create new one.
         Returns (user, is_new).
+
+        Referral rules:
+        - New user with valid referrer_code → create Referral + pay signup reward.
+        - Existing user without referrer_id + valid referrer_code → apply late referral
+          + pay signup reward (only once, guarded by Referral row check).
+        - Self-referral blocked.
+        - Reward is paid INLINE within the same transaction so it is atomic.
         """
+        from datetime import datetime, timezone
+
         user = await session.get(User, tg_user.id)
 
-        # ── Existing user: refresh profile ──
+        # ─────────────────────────────────────────────────────────────
+        # EXISTING USER: refresh profile + optional late referral
+        # ─────────────────────────────────────────────────────────────
         if user:
             user.username = tg_user.username
             user.first_name = tg_user.first_name
             user.last_name = tg_user.last_name
-            from datetime import datetime, timezone
             user.last_active = datetime.now(tz=timezone.utc)
+
+            applied_late_referral = False
+
+            if referrer_code and user.referrer_id is None:
+                result = await session.execute(
+                    select(User.id).where(User.referral_code == referrer_code)
+                )
+                found_id = result.scalar_one_or_none()
+
+                if found_id and found_id != tg_user.id:
+                    # Guard against duplicate: no existing Referral row for this user
+                    existing = await session.execute(
+                        select(Referral.id).where(
+                            Referral.referred_id == tg_user.id
+                        )
+                    )
+                    if existing.scalar_one_or_none() is None:
+                        user.referrer_id = found_id
+
+                        referral = Referral(
+                            referrer_id=found_id,
+                            referred_id=tg_user.id,
+                        )
+                        session.add(referral)
+                        await session.flush()
+
+                        referrer = await session.get(User, found_id)
+                        if referrer:
+                            reward = settings.REFERRAL_REWARD
+                            referrer.balance = (referrer.balance or Decimal("0")) + reward
+                            referral.reward_paid = reward
+                            applied_late_referral = True
+                            log.info(
+                                "Late referral applied + reward paid",
+                                referrer_id=found_id,
+                                referred_id=tg_user.id,
+                                amount=str(reward),
+                            )
+
             await session.flush()
+
+            if applied_late_referral:
+                _referrer_id = user.referrer_id
+                asyncio.create_task(
+                    UserService._notify_referral_joined(_referrer_id)
+                )
+
             return user, False
 
-        # ── Resolve referrer ──
+        # ─────────────────────────────────────────────────────────────
+        # NEW USER: resolve referrer
+        # ─────────────────────────────────────────────────────────────
         referrer_id: Optional[int] = None
         if referrer_code:
             result = await session.execute(
@@ -59,7 +118,9 @@ class UserService:
             if found_id and found_id != tg_user.id:
                 referrer_id = found_id
 
-        # ── Create new user ──
+        # ─────────────────────────────────────────────────────────────
+        # Create new user
+        # ─────────────────────────────────────────────────────────────
         referral_code = _generate_referral_code(tg_user.id)
         user = User(
             id=tg_user.id,
@@ -73,38 +134,33 @@ class UserService:
         session.add(user)
         await session.flush()
 
-        # ── Notify admins of new registration ──
+        # ─────────────────────────────────────────────────────────────
+        # Notify admins of new registration (background, no DB)
+        # ─────────────────────────────────────────────────────────────
         try:
             total_users = (await session.execute(
                 select(sa_func.count(User.id))
             )).scalar()
 
-            _new_user_id = tg_user.id
-            _new_username = tg_user.username
-            _new_first = tg_user.first_name
-            _new_last = tg_user.last_name
-            _new_referrer = referrer_id
-            _total = total_users
-            _lang = getattr(tg_user, "language_code", None)
-            _premium = bool(getattr(tg_user, "is_premium", False))
-
             from services.notification_service import NotificationService
             asyncio.create_task(
                 NotificationService.notify_admin_new_user(
-                    user_id=_new_user_id,
-                    username=_new_username,
-                    first_name=_new_first,
-                    last_name=_new_last,
-                    referrer_id=_new_referrer,
-                    total_users=_total,
-                    language_code=_lang,
-                    is_premium=_premium,
+                    user_id=tg_user.id,
+                    username=tg_user.username,
+                    first_name=tg_user.first_name,
+                    last_name=tg_user.last_name,
+                    referrer_id=referrer_id,
+                    total_users=total_users,
+                    language_code=getattr(tg_user, "language_code", None),
+                    is_premium=bool(getattr(tg_user, "is_premium", False)),
                 )
             )
         except Exception:
             log.exception("Failed to notify admins of new user")
 
-        # ── Create referral record + pay reward ──
+        # ─────────────────────────────────────────────────────────────
+        # Create referral row + pay signup reward INLINE (atomic)
+        # ─────────────────────────────────────────────────────────────
         if referrer_id:
             referral = Referral(
                 referrer_id=referrer_id,
@@ -113,8 +169,20 @@ class UserService:
             session.add(referral)
             await session.flush()
 
+            referrer = await session.get(User, referrer_id)
+            if referrer:
+                reward = settings.REFERRAL_REWARD
+                referrer.balance = (referrer.balance or Decimal("0")) + reward
+                referral.reward_paid = reward
+                log.info(
+                    "Signup referral reward paid",
+                    referrer_id=referrer_id,
+                    referred_id=tg_user.id,
+                    amount=str(reward),
+                )
+
             asyncio.create_task(
-                UserService._pay_referral_reward_async(referrer_id, tg_user.id)
+                UserService._notify_referral_joined(referrer_id)
             )
 
         log.info(
@@ -125,27 +193,23 @@ class UserService:
         )
         return user, True
 
+    # ─────────────────────────────────────────────────────────────
+    # Background notification helper (does NOT touch DB transaction)
+    # ─────────────────────────────────────────────────────────────
     @staticmethod
-    async def _pay_referral_reward_async(referrer_id: int, referred_id: int) -> None:
-        """Pay referral signup reward in a separate transaction."""
-        from database import get_session
-        from services.reward_service import RewardService
+    async def _notify_referral_joined(referrer_id: int) -> None:
+        """Fire-and-forget notification when someone uses a referral link."""
         try:
-            async with get_session() as session:
-                async with session.begin():
-                    await RewardService.pay_referral_signup_reward(
-                        session=session,
-                        referrer_id=referrer_id,
-                        referred_user_id=referred_id,
-                    )
-            # Notify referrer
             from services.notification_service import NotificationService
             await NotificationService.referral_joined(
                 referrer_id, str(settings.REFERRAL_REWARD)
             )
         except Exception as e:
-            log.error("Referral reward payment failed", error=str(e))
+            log.error("Referral notification failed", error=str(e))
 
+    # ─────────────────────────────────────────────────────────────
+    # Read helpers
+    # ─────────────────────────────────────────────────────────────
     @staticmethod
     async def get_user(session: AsyncSession, user_id: int) -> Optional[User]:
         return await session.get(User, user_id)
@@ -159,6 +223,9 @@ class UserService:
         )
         return result.scalar_one_or_none()
 
+    # ─────────────────────────────────────────────────────────────
+    # BSC wallet
+    # ─────────────────────────────────────────────────────────────
     @staticmethod
     async def set_bsc_wallet(
         session: AsyncSession,
@@ -186,6 +253,9 @@ class UserService:
             session.add(wallet)
             await session.flush()
 
+    # ─────────────────────────────────────────────────────────────
+    # Referral stats
+    # ─────────────────────────────────────────────────────────────
     @staticmethod
     async def get_referral_stats(
         session: AsyncSession, user_id: int
