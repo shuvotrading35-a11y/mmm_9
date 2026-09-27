@@ -30,13 +30,33 @@ async def handle_force_join_check(update: Update, context: ContextTypes.DEFAULT_
         )
 
     # ══════════════════════════════════════════════════════════════
-    # All joined — send main menu
+    # All joined — register user (with pending referral) + send menu
     # ══════════════════════════════════════════════════════════════
     if all_joined:
         try:
             await query.message.delete()
         except Exception:
             pass
+
+        # ⭐ Register user now with any pending referral code saved by cmd_start
+        referrer_code = context.user_data.pop("pending_referral_code", None)
+        try:
+            from services.user_service import UserService
+            async with get_session() as session:
+                async with session.begin():
+                    db_user, is_new = await UserService.get_or_create_user(
+                        session=session,
+                        tg_user=user,
+                        referrer_code=referrer_code,
+                    )
+            log.info(
+                "User registered after force-join",
+                user_id=user.id,
+                is_new=is_new,
+                referral_applied=bool(referrer_code),
+            )
+        except Exception:
+            log.exception("Failed to register user after force-join")
 
         # Determine sponsor status
         is_sponsor = False
