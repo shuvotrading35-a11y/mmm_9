@@ -26,17 +26,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("⏳ Too many requests. Please wait a moment.")
         return
 
-    # 2. Force join check (admins bypass)
-    if user.id not in settings.ADMIN_IDS:
-        try:
-            from middlewares.force_join_middleware import ForceJoinMiddleware
-            passed = await ForceJoinMiddleware.check(update, context)
-            if not passed:
-                return  # Middleware already sent the join prompt
-        except Exception:
-            log.exception("Force-join check failed in /start")
-
-    # 3. Parse referral code from deep link: /start ref_ABC123
+    # 2. Parse referral code FIRST and persist — survives force-join
     referrer_code = None
     if context.args:
         arg = context.args[0]
@@ -45,7 +35,33 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         elif arg.startswith("REF"):
             referrer_code = arg
 
-    # 4. Register / fetch user
+    if referrer_code:
+        # Save so that force-join callback can pick it up later
+        context.user_data["pending_referral_code"] = referrer_code
+
+    # 3. Force join check (admins bypass)
+    if user.id not in settings.ADMIN_IDS:
+        try:
+            from middlewares.force_join_middleware import ForceJoinMiddleware
+            passed = await ForceJoinMiddleware.check(update, context)
+            if not passed:
+                # Middleware sent the join prompt. Referral code is saved in user_data.
+                log.info(
+                    "Force-join blocked; referral code saved",
+                    user_id=user.id,
+                    pending_ref=referrer_code,
+                )
+                return
+        except Exception:
+            log.exception("Force-join check failed in /start")
+
+    # 4. Recover referrer code (from args OR from earlier failed attempt)
+    if referrer_code is None:
+        referrer_code = context.user_data.pop("pending_referral_code", None)
+    else:
+        context.user_data.pop("pending_referral_code", None)
+
+    # 5. Register / fetch user
     async with get_session() as session:
         async with session.begin():
             db_user, is_new = await UserService.get_or_create_user(
@@ -54,7 +70,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 referrer_code=referrer_code,
             )
 
-    # 5. Sponsor status (based on Sponsor table, not user flag)
+    # 6. Sponsor status
     is_sponsor = await _is_user_sponsor(user.id)
 
     from utils.decimal_utils import fmt_usdt
