@@ -16,6 +16,7 @@ log = structlog.get_logger(__name__)
 
 class NotificationService:
     _bot: Optional[Bot] = None
+    _bot_name_cache: Optional[str] = None
 
     # ══════════════════════════════════════════════════════════════
     # Bot injection
@@ -50,6 +51,22 @@ class NotificationService:
         except Exception:
             log.exception("NotificationService: failed to create bot lazily")
             return None
+
+    @classmethod
+    async def _get_bot_name(cls) -> str:
+        """Return bot's display name (cached). Fallback: 'Bot'."""
+        if cls._bot_name_cache:
+            return cls._bot_name_cache
+        bot = cls._ensure_bot()
+        if bot is None:
+            return "Bot"
+        try:
+            me = await bot.get_me()
+            cls._bot_name_cache = me.first_name or (me.username or "Bot")
+            return cls._bot_name_cache
+        except Exception:
+            log.exception("Failed to fetch bot name")
+            return "Bot"
 
     # ══════════════════════════════════════════════════════════════
     # Core send
@@ -129,27 +146,42 @@ class NotificationService:
         language_code: Optional[str] = None,
         is_premium: bool = False,
     ) -> None:
+        # ── Name & username ──
         name_parts = [first_name or "", last_name or ""]
-        full_name = " ".join(p for p in name_parts if p).strip() or "—"
-        username_str = f"@{username}" if username else "—"
+        full_name = " ".join(p for p in name_parts if p).strip() or "Unknown"
+        if username:
+            username_str = f"@{username}"
+        else:
+            username_str = "No username"
 
+        # ── Premium badge ──
         premium_badge = " ⭐" if is_premium else ""
-        lang_line = f"\n🌐 Language: {language_code}" if language_code else ""
+
+        # ── Optional lines ──
         referrer_line = ""
         if referrer_id:
-            referrer_line = f"\n🎁 Referred by: <code>{referrer_id}</code>"
+            referrer_line = f"🎁 Referral ID: <code>{referrer_id}</code>\n"
+
         total_line = ""
         if total_users is not None:
-            total_line = f"\n\n📊 Total users: <b>{total_users:,}</b>"
+            total_line = f"👥 Total Users: <b>{total_users:,}</b>\n"
+
+        # ── Bot name footer ──
+        bot_name = await cls._get_bot_name()
+
+        divider = "━━━━━━━━━━━━━━━━━━━━"
 
         text = (
-            f"🆕 <b>New User Registered</b>{premium_badge}\n\n"
-            f"👤 Name: <b>{full_name}</b>\n"
-            f"🔗 Username: {username_str}\n"
-            f"🆔 ID: <code>{user_id}</code>"
-            f"{lang_line}"
+            f"🆕 <b>NEW USER JOINED</b>\n"
+            f"{divider}\n"
+            f"👤 Name: <b>{full_name}</b>{premium_badge}\n"
+            f"🔹 Username: {username_str}\n"
+            f"🆔 User ID: <code>{user_id}</code>\n"
+            f"🔗 <a href=\"tg://user?id={user_id}\">Open Profile</a>\n"
             f"{referrer_line}"
             f"{total_line}"
+            f"{divider}\n"
+            f"🤖 {bot_name}"
         )
         await cls.notify_admin(text)
 
