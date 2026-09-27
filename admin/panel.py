@@ -1884,7 +1884,7 @@ async def _admin_reject_deposit(query, deposit_id: int, admin_id: int) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════
-# Sponsor balance add
+# Sponsor balance adjust (add or subtract)
 # ══════════════════════════════════════════════════════════════════
 
 async def _admin_sponsor_balance_prompt(query, context, sponsor_id: int) -> None:
@@ -1896,31 +1896,43 @@ async def _admin_sponsor_balance_prompt(query, context, sponsor_id: int) -> None
             await _safe_edit(query, "❌ Sponsor not found.")
             return
 
+        current = sponsor.available_balance
+        reserved = sponsor.reserved_balance
+
         context.user_data["admin_awaiting_sponsor_balance"] = True
         context.user_data["admin_sponsor_id"] = sponsor_id
-        context.user_data["admin_sponsor_current"] = str(sponsor.available_balance)
+        context.user_data["admin_sponsor_current"] = str(current)
 
     await _safe_edit(
         query,
-        f"💰 <b>ADD BALANCE — Sponsor #{sponsor_id}</b>\n\n"
-        f"Current balance: <b>{fmt_usdt(Decimal(context.user_data['admin_sponsor_current']))} USDT</b>\n\n"
-        f"Send the amount in USDT (e.g. <code>50</code>):\n\n"
+        f"💰 <b>ADJUST BALANCE — Sponsor #{sponsor_id}</b>\n\n"
+        f"💵 Available: <b>{fmt_usdt(current)} USDT</b>\n"
+        f"🔒 Reserved:  <b>{fmt_usdt(reserved)} USDT</b>\n\n"
+        f"Send an amount to <b>ADD</b> (positive)\n"
+        f"or <b>REMOVE</b> (negative):\n\n"
+        f"• <code>50</code> → adds 50 USDT\n"
+        f"• <code>-20</code> → removes 20 USDT\n\n"
         f"Send /cancel to abort.",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 Cancel", callback_data=f"admin:sponsor_view:{sponsor_id}")]
+            [InlineKeyboardButton(
+                "🔙 Cancel",
+                callback_data=f"admin:sponsor_view:{sponsor_id}"
+            )]
         ]),
     )
 
 
 async def _handle_sponsor_balance_input(update, context, text: str) -> None:
+    # ── Parse amount (allow negative, reject zero) ──
     try:
         amount = Decimal(text)
-        if amount <= 0:
+        if amount == 0:
             raise ValueError
     except (InvalidOperation, ValueError):
         await update.message.reply_text(
-            "❌ Invalid amount. Send a positive number like <code>50</code>.",
+            "❌ Invalid amount. Send a number like <code>50</code> "
+            "or <code>-20</code>.",
             parse_mode="HTML",
         )
         return
@@ -1929,8 +1941,6 @@ async def _handle_sponsor_balance_input(update, context, text: str) -> None:
     if not sponsor_id:
         context.user_data.pop("admin_awaiting_sponsor_balance", None)
         return
-
-    context.user_data["admin_awaiting_sponsor_balance"] = False
 
     try:
         async with get_session() as session:
@@ -1946,41 +1956,76 @@ async def _handle_sponsor_balance_input(update, context, text: str) -> None:
 
                 old = sponsor.available_balance
                 new = old + amount
-                sponsor_user_id = sponsor.user_id
 
+                # Prevent going below zero
+                if new < 0:
+                    await update.message.reply_text(
+                        f"❌ Cannot reduce below zero.\n\n"
+                        f"Current available: <b>{fmt_usdt(old)} USDT</b>\n"
+                        f"Attempted change: <b>{fmt_usdt(amount)} USDT</b>",
+                        parse_mode="HTML",
+                    )
+                    return
+
+                sponsor_user_id = sponsor.user_id
                 sponsor.available_balance = new
-                if getattr(sponsor, "total_deposited", None) is not None:
+
+                # If ADDING, also bump total_deposited (only if field exists)
+                if amount > 0 and getattr(sponsor, "total_deposited", None) is not None:
                     sponsor.total_deposited = sponsor.total_deposited + amount
 
                 session.add(AuditLog(
                     admin_id=update.effective_user.id,
-                    action="SPONSOR_ADD_BALANCE",
+                    action=(
+                        "SPONSOR_ADD_BALANCE" if amount > 0
+                        else "SPONSOR_SUBTRACT_BALANCE"
+                    ),
                     target_type="sponsor",
                     target_id=sponsor_id,
                     old_value={"available_balance": str(old)},
-                    new_value={"available_balance": str(new), "added": str(amount)},
+                    new_value={
+                        "available_balance": str(new),
+                        "delta": str(amount),
+                    },
                 ))
 
+        # Clear state
+        context.user_data.pop("admin_awaiting_sponsor_balance", None)
         context.user_data.pop("admin_sponsor_id", None)
         context.user_data.pop("admin_sponsor_current", None)
 
+        # Confirmation
+        verb = "Added" if amount > 0 else "Removed"
+        icon = "✅" if amount > 0 else "➖"
+
         await update.message.reply_text(
-            f"✅ <b>Balance Added</b>\n\n"
+            f"{icon} <b>Balance {verb}</b>\n\n"
             f"Sponsor #{sponsor_id}\n"
-            f"Added: <b>{fmt_usdt(amount)} USDT</b>\n"
+            f"Delta: <b>{'+' if amount > 0 else ''}{fmt_usdt(amount)} USDT</b>\n"
             f"New balance: <b>{fmt_usdt(new)} USDT</b>",
             parse_mode="HTML",
             reply_markup=admin_main_reply_keyboard(),
         )
 
-        asyncio.create_task(_notify_user(
-            sponsor_user_id,
-            f"💳 <b>Balance Added</b>\n\n"
-            f"Admin added <b>{fmt_usdt(amount)} USDT</b> to your sponsor wallet.\n"
-            f"New balance: <b>{fmt_usdt(new)} USDT</b>",
-        ))
+        # Notify sponsor
+        if amount > 0:
+            msg = (
+                f"💳 <b>Balance Added</b>\n\n"
+                f"Admin added <b>{fmt_usdt(amount)} USDT</b> "
+                f"to your sponsor wallet.\n"
+                f"New balance: <b>{fmt_usdt(new)} USDT</b>"
+            )
+        else:
+            msg = (
+                f"➖ <b>Balance Removed</b>\n\n"
+                f"Admin removed <b>{fmt_usdt(abs(amount))} USDT</b> "
+                f"from your sponsor wallet.\n"
+                f"New balance: <b>{fmt_usdt(new)} USDT</b>"
+            )
+        asyncio.create_task(_notify_user(sponsor_user_id, msg))
+
     except Exception as e:
-        log.exception("Sponsor balance add failed", sponsor_id=sponsor_id)
+        log.exception("Sponsor balance adjust failed", sponsor_id=sponsor_id)
         await update.message.reply_text(
             f"❌ Failed: <code>{str(e)[:200]}</code>",
             parse_mode="HTML",
@@ -1989,7 +2034,6 @@ async def _handle_sponsor_balance_input(update, context, text: str) -> None:
 
 async def _admin_sponsor_balance_confirm(query, context, sponsor_id: int, admin_id: int) -> None:
     await _safe_edit(query, "⚠️ Use the current flow (send amount directly).")
-
 
 # ══════════════════════════════════════════════════════════════════
 # User search
