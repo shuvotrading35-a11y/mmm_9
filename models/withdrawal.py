@@ -44,6 +44,19 @@ class Withdrawal(Base):
     retry_count: Mapped[int] = mapped_column(SmallInteger, default=0, nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
 
+    # ══════════════════════════════════════════════════════════════
+    # ── xRocket Pay API fields ──
+    # ══════════════════════════════════════════════════════════════
+    xrocket_withdrawal_id: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+    xrocket_status: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True
+    )
+    xrocket_response: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True
+    )  # JSON snapshot of last API response
+
     created_at: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
