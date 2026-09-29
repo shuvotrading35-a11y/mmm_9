@@ -64,6 +64,16 @@ class Settings(BaseSettings):
     WEBHOOK_SECRET: Optional[str] = None
     WEBHOOK_PORT: int = 8443
 
+    # ══════════════════════════════════════════════════════
+    # ── xRocket Pay API ──────────────────────────────────
+    # ══════════════════════════════════════════════════════
+    XROCKET_ENV: str = "production"           # "production" or "testnet"
+    XROCKET_API_TOKEN: str = ""               # Bearer token from @xRocket
+    XROCKET_WEBHOOK_TOKEN: str = ""           # for webhook signature (HMAC)
+    XROCKET_WITHDRAW_ASSET: str = "USDT"      # asset for withdrawals
+    XROCKET_WITHDRAW_NETWORK: str = "BSC"     # BSC (BEP20) or TRX (TRC20)
+    XROCKET_DEPOSIT_ASSET: str = "USDT"       # asset for invoices
+
     # ── Logging ──────────────────────────────────────────
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "json"  # json or text
@@ -113,6 +123,17 @@ class Settings(BaseSettings):
             raise ValueError("MIN_WITHDRAWAL must be less than MAX_WITHDRAWAL")
         if self.TASK_MIN_REWARD >= self.TASK_MAX_REWARD:
             raise ValueError("TASK_MIN_REWARD must be less than TASK_MAX_REWARD")
+        return self
+
+    @model_validator(mode="after")
+    def validate_xrocket(self):
+        """Warn if xRocket token missing — payout features will be disabled."""
+        if not self.XROCKET_API_TOKEN:
+            import warnings
+            warnings.warn(
+                "XROCKET_API_TOKEN not set — withdrawals via xRocket will fail. "
+                "Add it in Railway Variables."
+            )
         return self
 
     def is_admin(self, user_id: int) -> bool:
