@@ -11,6 +11,10 @@ from database import get_session
 log = structlog.get_logger(__name__)
 
 
+# ══════════════════════════════════════════════════════════════
+# Deposit menu + method selection
+# ══════════════════════════════════════════════════════════════
+
 async def show_deposit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show the 3-method deposit menu — like the screenshot."""
     kb = InlineKeyboardMarkup([
@@ -79,6 +83,10 @@ async def prompt_deposit_amount(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
 
+# ══════════════════════════════════════════════════════════════
+# Amount input → dispatch to method
+# ══════════════════════════════════════════════════════════════
+
 async def handle_deposit_amount_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Called when sponsor types amount."""
     text = (update.message.text or "").strip()
@@ -124,6 +132,10 @@ async def handle_deposit_amount_input(update: Update, context: ContextTypes.DEFA
         else:
             await _dispatch_xrocket(update, context, session, sponsor, amount)
 
+
+# ══════════════════════════════════════════════════════════════
+# Method dispatchers
+# ══════════════════════════════════════════════════════════════
 
 async def _dispatch_binance(update, context, session, sponsor, amount):
     from services.manual_deposit_service import ManualDepositService
@@ -217,6 +229,10 @@ async def _dispatch_xrocket(update, context, session, sponsor, amount):
     )
 
 
+# ══════════════════════════════════════════════════════════════
+# xRocket invoice status check
+# ══════════════════════════════════════════════════════════════
+
 async def handle_deposit_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check xRocket invoice status manually."""
     query = update.callback_query
@@ -262,3 +278,94 @@ async def handle_deposit_check(update: Update, context: ContextTypes.DEFAULT_TYP
                 return
 
         await query.answer(f"⏳ Not paid yet. Status: {xr_status}", show_alert=True)
+
+
+# ══════════════════════════════════════════════════════════════
+# BEP20 tx_hash paste handler
+# ══════════════════════════════════════════════════════════════
+
+async def handle_deposit_tx_hash(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle BEP20 tx_hash paste (called from _combined_text_dispatcher)."""
+    dep_id = context.user_data.pop("awaiting_deposit_txhash", None)
+    if not dep_id:
+        return
+
+    tx_hash = (update.message.text or "").strip()
+
+    from services.manual_deposit_service import ManualDepositService
+
+    async with get_session() as session:
+        try:
+            ok = await ManualDepositService.attach_tx_hash(
+                session, dep_id, tx_hash
+            )
+            await session.commit()
+        except Exception:
+            log.exception("attach_tx_hash failed", deposit_id=dep_id)
+            await session.rollback()
+            ok = False
+
+    if ok:
+        await update.message.reply_text(
+            "✅ <b>TX hash received!</b>\n\n"
+            "📋 Admin will verify on BscScan and credit your balance shortly.",
+            parse_mode="HTML",
+        )
+    else:
+        # Keep flag so user can retry
+        context.user_data["awaiting_deposit_txhash"] = dep_id
+        await update.message.reply_text(
+            "❌ Invalid tx_hash format.\n\n"
+            "Please paste the full BEP20 transaction hash — it starts with "
+            "<code>0x</code> and is 66 characters long.",
+            parse_mode="HTML",
+        )
+
+
+# ══════════════════════════════════════════════════════════════
+# Binance Pay screenshot handler
+# ══════════════════════════════════════════════════════════════
+
+async def handle_deposit_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle Binance Pay payment screenshot (called from _photo_dispatcher)."""
+    dep_id = context.user_data.pop("awaiting_deposit_screenshot", None)
+    if not dep_id:
+        return
+
+    if not update.message or not update.message.photo:
+        # Re-arm the flag so user can resend a photo
+        context.user_data["awaiting_deposit_screenshot"] = dep_id
+        await update.message.reply_text(
+            "❌ Please send a <b>photo</b> (screenshot) of your Binance Pay payment.",
+            parse_mode="HTML",
+        )
+        return
+
+    # Largest size = index -1
+    photo = update.message.photo[-1]
+    file_id = photo.file_id
+
+    from services.manual_deposit_service import ManualDepositService
+
+    async with get_session() as session:
+        try:
+            ok = await ManualDepositService.attach_screenshot(
+                session, dep_id, file_id
+            )
+            await session.commit()
+        except Exception:
+            log.exception("attach_screenshot failed", deposit_id=dep_id)
+            await session.rollback()
+            ok = False
+
+    if ok:
+        await update.message.reply_text(
+            "✅ <b>Screenshot received!</b>\n\n"
+            "📋 Admin will verify your payment and credit the balance shortly.",
+            parse_mode="HTML",
+        )
+    else:
+        context.user_data["awaiting_deposit_screenshot"] = dep_id
+        await update.message.reply_text(
+            "❌ Could not attach screenshot. Please try sending it again."
+        )
