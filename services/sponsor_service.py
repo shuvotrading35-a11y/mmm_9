@@ -144,13 +144,21 @@ class SponsorService:
             expires_in=ttl_seconds,
         )
 
-        invoice_id = str(resp.get("invoiceId") or resp.get("id") or "")
+        # ⭐ Correct field names (verified against xRocket testnet):
+        #   - response id  : `id`
+        #   - pay URL      : `links.telegramBotLink`
+        invoice_id = str(resp.get("id") or resp.get("invoiceId") or "")
+
+        links = resp.get("links") or {}
         pay_url = (
-            resp.get("payUrl")
+            links.get("telegramBotLink")
+            or links.get("webLink")
+            or resp.get("payUrl")
             or resp.get("url")
-            or resp.get("link")
             or ""
         )
+
+        xr_status = (resp.get("status") or "pending").lower()
 
         # 2. Store pending deposit row
         # NOTE: tx_hash stays NULL here — it's only for on-chain deposits.
@@ -163,7 +171,7 @@ class SponsorService:
             xrocket_invoice_id=invoice_id,
             xrocket_client_invoice_id=client_id,
             xrocket_pay_url=pay_url,
-            xrocket_status="pending",
+            xrocket_status=xr_status,
             xrocket_response=json.dumps(resp)[:4000],
         )
         session.add(deposit)
@@ -175,6 +183,7 @@ class SponsorService:
             invoice_id=invoice_id,
             amount=str(amount),
             client_id=client_id,
+            pay_url=pay_url,
         )
 
         return {
