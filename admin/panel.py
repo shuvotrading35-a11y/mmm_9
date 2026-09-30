@@ -2535,3 +2535,40 @@ async def _admin_fj_delete_confirm(query, channel_id: int, admin_id: int) -> Non
     except Exception as e:
         log.exception("Delete force join channel failed", channel_id=channel_id)
         await _safe_edit(query, f"❌ Failed: <code>{str(e)[:200]}</code>", parse_mode="HTML")
+
+
+
+async def handle_deposit_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin approve/reject manual deposit."""
+    query = update.callback_query
+    await query.answer()
+
+    action, dep_id_str = query.data.split(":")
+    dep_id = int(dep_id_str)
+
+    from database import get_session
+    from services.manual_deposit_service import ManualDepositService
+
+    async with get_session() as session:
+        if action == "dep_approve":
+            ok = await ManualDepositService.approve_deposit(
+                session, dep_id, update.effective_user.id
+            )
+            await session.commit()
+            msg = "✅ Deposit approved." if ok else "❌ Failed."
+        else:
+            ok = await ManualDepositService.reject_deposit(
+                session, dep_id, update.effective_user.id
+            )
+            await session.commit()
+            msg = "❌ Deposit rejected." if ok else "❌ Failed."
+
+    try:
+        if query.message.photo:
+            await query.edit_message_caption(
+                caption=f"{query.message.caption}\n\n{msg}"
+            )
+        else:
+            await query.edit_message_text(f"{query.message.text}\n\n{msg}")
+    except Exception:
+        pass
