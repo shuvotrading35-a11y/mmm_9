@@ -314,23 +314,10 @@ async def sponsor_my_campaigns_reply(update: Update, context: ContextTypes.DEFAU
     )
 
 
-async def sponsor_deposit_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """💰 Deposit USDT — show deposit info."""
-    from config import settings
-    context.user_data["sponsor_step"] = "enter_tx_hash"
-    await update.message.reply_text(
-        f"💰 <b>DEPOSIT USDT</b>\n\n"
-        f"Send USDT (BEP-20) to:\n"
-        f"<code>{settings.PAYOUT_WALLET_ADDRESS}</code>\n\n"
-        f"🌐 Network: BNB Smart Chain (BSC)\n"
-        f"📜 Contract: <code>{settings.USDT_CONTRACT_ADDRESS}</code>\n"
-        f"💵 Minimum: {settings.SPONSOR_MIN_DEPOSIT} USDT\n"
-        f"⏳ Confirmations: {settings.MIN_DEPOSIT_CONFIRMATIONS} blocks\n\n"
-        f"After sending, reply with your <b>Transaction Hash</b> (0x...):",
-        parse_mode="HTML",
-        reply_markup=sponsor_cancel_reply_keyboard(),
-    )
-
+async def sponsor_deposit_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle 💰 Deposit USDT button."""
+    from sponsor.deposit_router import show_deposit_menu
+    await show_deposit_menu(update, context)
 
 async def sponsor_analytics_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """📊 Analytics — overall sponsor analytics."""
