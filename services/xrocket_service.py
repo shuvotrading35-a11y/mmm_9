@@ -184,6 +184,7 @@ class XRocketService:
         *,
         amount: Optional[Decimal] = None,
         asset: str = "USDT",
+        price_currency: Optional[str] = None,
         description: Optional[str] = None,
         client_invoice_id: Optional[str] = None,
         expires_in: Optional[int] = None,   # seconds
@@ -191,10 +192,14 @@ class XRocketService:
         """
         POST /api/v1/invoices
         Returns invoice with pay URL for the user.
+
+        `priceCurrency` is REQUIRED by xRocket — it's the currency the
+        invoice amount is denominated in. Defaults to `asset` if not set.
         """
         payload: dict[str, Any] = {
             "clientInvoiceId": client_invoice_id or cls._new_client_id("INV"),
             "asset": asset,
+            "priceCurrency": price_currency or asset,
         }
         if amount is not None:
             payload["amount"] = str(amount)
