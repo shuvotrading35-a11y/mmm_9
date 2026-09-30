@@ -2,9 +2,12 @@
 Withdrawal Service — full withdrawal lifecycle management.
 PENDING → PROCESSING → PAID | FAILED
 Failed payouts MUST atomically refund user balance.
+
+Payouts are executed via xRocket Pay API.
 """
 import asyncio
 import hashlib
+import json as _json
 import uuid
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
@@ -32,6 +35,14 @@ def _make_withdrawal_idempotency_key(withdrawal_id: int) -> str:
 def _make_withdrawal_refund_key(withdrawal_id: int) -> str:
     raw = f"withdrawal_refund:{withdrawal_id}:{settings.SECRET_SALT}"
     return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _make_xrocket_client_id(withdrawal_id: int) -> str:
+    """
+    Deterministic client ID for xRocket idempotency.
+    Same withdrawal_id → same clientId → retries are safe.
+    """
+    return f"WD{withdrawal_id:010d}"
 
 
 class WithdrawalValidationError(Exception):
@@ -143,7 +154,7 @@ class WithdrawalService:
         withdrawal = Withdrawal(
             user_id=user_id,
             amount=amount,
-            network="BSC",
+            network=settings.XROCKET_WITHDRAW_NETWORK,
             destination_wallet=destination_wallet,
             status=WithdrawalStatus.PENDING,
             idempotency_key=idempotency_key,
@@ -180,11 +191,11 @@ class WithdrawalService:
         withdrawal_id: int,
     ) -> bool:
         """
-        Execute an on-chain payout for a PENDING withdrawal.
+        Execute a payout for a PENDING withdrawal via xRocket Pay API.
         Returns True on success, False on failure (balance already refunded on failure).
         Must be called within session.begin().
         """
-        from services.blockchain_service import get_blockchain_service
+        from services.xrocket_service import XRocketService, XRocketError
 
         # Lock withdrawal row
         result = await session.execute(
@@ -210,36 +221,92 @@ class WithdrawalService:
         withdrawal.status = WithdrawalStatus.PROCESSING
         await session.flush()
 
-        blockchain = get_blockchain_service()
-        result = await blockchain.send_usdt(
-            to_address=withdrawal.destination_wallet,
-            amount=withdrawal.amount,
-            private_key=settings.PAYOUT_PRIVATE_KEY,
-            idempotency_key=withdrawal.idempotency_key,
-        )
-
         # Snapshot values for notifications before mutation
         wd_id = withdrawal.id
         wd_user_id = withdrawal.user_id
         wd_amount = withdrawal.amount
         wd_wallet = withdrawal.destination_wallet or "—"
 
-        if result["success"]:
-            withdrawal.status = WithdrawalStatus.PAID
-            withdrawal.tx_hash = result["tx_hash"]
-            withdrawal.block_number = result.get("block_number")
-            withdrawal.gas_used = result.get("gas_used")
-            withdrawal.processed_at = datetime.now(tz=timezone.utc)
-            await session.flush()
+        # Deterministic client ID — same on every retry → idempotent
+        client_id = _make_xrocket_client_id(wd_id)
 
-            log.info(
-                "Withdrawal paid",
-                withdrawal_id=wd_id,
-                tx_hash=result["tx_hash"],
-                amount=str(wd_amount),
+        try:
+            resp = await XRocketService.create_withdrawal(
+                asset=settings.XROCKET_WITHDRAW_ASSET,
+                network=settings.XROCKET_WITHDRAW_NETWORK,
+                address=withdrawal.destination_wallet,
+                amount=withdrawal.amount,
+                client_withdrawal_id=client_id,
             )
+        except XRocketError as e:
+            # Duplicate — already submitted on a previous attempt
+            if e.type.endswith("/withdrawal_duplicate"):
+                log.warning(
+                    "xRocket reports duplicate withdrawal — treating as success",
+                    withdrawal_id=wd_id,
+                    client_id=client_id,
+                )
+                withdrawal.xrocket_status = "pending"
+                withdrawal.xrocket_response = _json.dumps(
+                    {"duplicate": True, "type": e.type, "detail": e.detail}
+                )[:4000]
+                withdrawal.status = WithdrawalStatus.PROCESSING
+                await session.flush()
+                return True
 
-            # Notify user (fire-and-forget)
+            # Real failure → refund
+            log.error(
+                "xRocket withdrawal failed",
+                withdrawal_id=wd_id,
+                error_type=e.type,
+                detail=e.detail,
+            )
+            await WithdrawalService._refund_failed_withdrawal(
+                session, withdrawal, f"{e.type}: {e.detail}"
+            )
+            return False
+
+        except Exception as e:
+            log.exception("xRocket withdrawal unexpected error", withdrawal_id=wd_id)
+            await WithdrawalService._refund_failed_withdrawal(
+                session, withdrawal, f"unexpected: {str(e)[:300]}"
+            )
+            return False
+
+        # ── Save xRocket response ──
+        withdrawal.xrocket_withdrawal_id = str(
+            resp.get("withdrawalId") or resp.get("id") or ""
+        ) or None
+        xr_status = (resp.get("status") or "").lower()
+        withdrawal.xrocket_status = xr_status or "pending"
+        withdrawal.xrocket_response = _json.dumps(resp)[:4000]
+
+        # tx hash — may or may not be present yet
+        tx_hash = resp.get("txHash") or resp.get("transactionHash")
+        if tx_hash:
+            withdrawal.tx_hash = tx_hash
+
+        # xRocket status → our status
+        if xr_status in ("finished", "completed", "paid"):
+            withdrawal.status = WithdrawalStatus.PAID
+            withdrawal.processed_at = datetime.now(tz=timezone.utc)
+        else:
+            # Still pending on xRocket side → keep PROCESSING
+            # A reconciliation job will update it to PAID later.
+            withdrawal.status = WithdrawalStatus.PROCESSING
+
+        await session.flush()
+
+        log.info(
+            "Withdrawal submitted to xRocket",
+            withdrawal_id=wd_id,
+            xrocket_id=withdrawal.xrocket_withdrawal_id,
+            xrocket_status=withdrawal.xrocket_status,
+            amount=str(wd_amount),
+        )
+
+        # Notify user only when PAID immediately
+        if withdrawal.status == WithdrawalStatus.PAID:
             from services.notification_service import NotificationService
             asyncio.create_task(
                 NotificationService.withdrawal_approved(
@@ -249,13 +316,7 @@ class WithdrawalService:
                 )
             )
 
-            return True
-        else:
-            # CRITICAL: Refund user balance on failure
-            await WithdrawalService._refund_failed_withdrawal(
-                session, withdrawal, result["error"]
-            )
-            return False
+        return True
 
     @staticmethod
     async def _refund_failed_withdrawal(
