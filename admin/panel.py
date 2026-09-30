@@ -1314,6 +1314,13 @@ async def _admin_view_deposit(query, deposit_id: int) -> None:
             "confirmations": d.confirmations,
             "created_at": d.created_at,
             "credited_at": d.credited_at,
+            "payment_method": getattr(d, "payment_method", "ONCHAIN"),
+            "deposit_address": getattr(d, "deposit_address", None),
+            "user_submitted_tx_hash": getattr(d, "user_submitted_tx_hash", None),
+            "user_screenshot_file_id": getattr(d, "user_screenshot_file_id", None),
+            "xrocket_invoice_id": getattr(d, "xrocket_invoice_id", None),
+            "xrocket_pay_url": getattr(d, "xrocket_pay_url", None),
+            "rejection_reason": getattr(d, "rejection_reason", None),
         }
 
         sponsor = await session.get(Sponsor, d.sponsor_id)
@@ -1327,17 +1334,40 @@ async def _admin_view_deposit(query, deposit_id: int) -> None:
             if u and u.username:
                 username = f"@{u.username}"
 
+    # ── Build TX line ──
+    if data["tx_hash"]:
+        tx_line = f"🔗 TX Hash:\n<code>{data['tx_hash']}</code>\n"
+    elif data["user_submitted_tx_hash"]:
+        tx_line = f"🔗 User TX Hash:\n<code>{data['user_submitted_tx_hash']}</code>\n"
+    elif data["xrocket_invoice_id"]:
+        tx_line = f"🧾 xRocket Invoice: <code>{data['xrocket_invoice_id']}</code>\n"
+    else:
+        tx_line = ""
+
+    # ── Build address line ──
+    addr_line = ""
+    if data["deposit_address"]:
+        addr_line = f"🎯 To: <code>{data['deposit_address']}</code>\n"
+
+    # ── Rejection reason ──
+    rejection_line = ""
+    if data["rejection_reason"]:
+        rejection_line = f"\n❌ Rejection: {data['rejection_reason']}\n"
+
     text = (
         f"💰 <b>DEPOSIT #{data['id']}</b>\n\n"
         f"━━━━━━ DETAILS ━━━━━━\n"
         f"📌 Status: <b>{data['status']}</b>\n"
         f"💵 Amount: <b>{fmt_usdt(data['amount'])} USDT</b>\n"
+        f"📥 Method: <b>{data['payment_method']}</b>\n"
         f"🌐 Network: <b>{data['network']}</b>\n"
-        f"🔗 TX Hash:\n<code>{data['tx_hash']}</code>\n"
+        f"{addr_line}"
+        f"{tx_line}"
         f"📤 From: <code>{data['from_address'] or '—'}</code>\n"
         f"✅ Confirmations: <b>{data['confirmations']}</b>\n"
         f"📅 Created: {fmt_datetime(data['created_at']) if data['created_at'] else '—'}\n"
-        f"💳 Credited: {fmt_datetime(data['credited_at']) if data['credited_at'] else '—'}\n\n"
+        f"💳 Credited: {fmt_datetime(data['credited_at']) if data['credited_at'] else '—'}\n"
+        f"{rejection_line}\n"
         f"━━━━━━ SPONSOR ━━━━━━\n"
         f"👤 User: <code>{sponsor_user_id or '—'}</code> {username}\n"
         f"📌 Status: <b>{sponsor_status}</b>\n"
@@ -1350,7 +1380,6 @@ async def _admin_view_deposit(query, deposit_id: int) -> None:
         parse_mode="HTML",
         reply_markup=deposit_action_keyboard(deposit_id, data["status"]),
     )
-
 
 async def _admin_banned_list(query) -> None:
     async with get_session() as session:
