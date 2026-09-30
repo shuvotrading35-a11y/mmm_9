@@ -347,6 +347,28 @@ class WithdrawalService:
                 description=f"Refund: failed withdrawal #{wd_id}",
                 update_total_earned=False,
             )
+
+            # ⭐ Also decrement `total_withdrawn` — otherwise it stays
+            #    inflated when a withdrawal fails after being debited.
+            try:
+                _user = await session.get(User, wd_user_id)
+                if _user is not None and _user.total_withdrawn is not None:
+                    new_total = (_user.total_withdrawn or Decimal("0")) - wd_amount
+                    if new_total < Decimal("0"):
+                        new_total = Decimal("0")
+                    _user.total_withdrawn = new_total
+                    log.info(
+                        "Decremented total_withdrawn on refund",
+                        user_id=wd_user_id,
+                        delta=str(wd_amount),
+                        new_total=str(new_total),
+                    )
+            except Exception:
+                log.exception(
+                    "Failed to decrement total_withdrawn",
+                    user_id=wd_user_id,
+                )
+
             withdrawal.status = WithdrawalStatus.FAILED
             withdrawal.failure_reason = failure_reason[:500]
             withdrawal.processed_at = datetime.now(tz=timezone.utc)
