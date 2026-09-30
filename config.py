@@ -74,6 +74,20 @@ class Settings(BaseSettings):
     XROCKET_WITHDRAW_NETWORK: str = "BSC"     # BSC (BEP20) or TRX (TRC20)
     XROCKET_DEPOSIT_ASSET: str = "USDT"       # asset for invoices
 
+    # ══════════════════════════════════════════════════════
+    # ── Manual Deposit Methods ───────────────────────────
+    # ══════════════════════════════════════════════════════
+
+    # Binance Pay — manual transfer + admin review
+    BINANCE_PAY_ID: str = ""                  # your Binance Pay numeric ID
+    BINANCE_PAY_MIN: Decimal = Decimal("0.20")
+    BINANCE_PAY_MAX: Decimal = Decimal("100.00")
+
+    # BEP20 on-chain deposit (USDT on BSC)
+    BEP20_DEPOSIT_ADDRESS: str = ""           # your USDT BEP20 receive wallet
+    BEP20_MIN: Decimal = Decimal("0.20")
+    BEP20_MAX: Decimal = Decimal("500.00")
+
     # ── Logging ──────────────────────────────────────────
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "json"  # json or text
@@ -111,6 +125,8 @@ class Settings(BaseSettings):
         "MIN_WITHDRAWAL", "MAX_WITHDRAWAL", "REFERRAL_REWARD",
         "SPONSOR_MIN_DEPOSIT", "TASK_MIN_REWARD", "TASK_MAX_REWARD",
         "REFERRAL_COMMISSION_PCT",
+        "BINANCE_PAY_MIN", "BINANCE_PAY_MAX",
+        "BEP20_MIN", "BEP20_MAX",
         mode="before",
     )
     @classmethod
@@ -123,6 +139,10 @@ class Settings(BaseSettings):
             raise ValueError("MIN_WITHDRAWAL must be less than MAX_WITHDRAWAL")
         if self.TASK_MIN_REWARD >= self.TASK_MAX_REWARD:
             raise ValueError("TASK_MIN_REWARD must be less than TASK_MAX_REWARD")
+        if self.BINANCE_PAY_MIN >= self.BINANCE_PAY_MAX:
+            raise ValueError("BINANCE_PAY_MIN must be less than BINANCE_PAY_MAX")
+        if self.BEP20_MIN >= self.BEP20_MAX:
+            raise ValueError("BEP20_MIN must be less than BEP20_MAX")
         return self
 
     @model_validator(mode="after")
