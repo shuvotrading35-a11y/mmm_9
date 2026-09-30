@@ -1912,6 +1912,81 @@ async def _admin_reject_deposit(query, deposit_id: int, admin_id: int) -> None:
         await _safe_edit(query, f"❌ {str(e)[:200]}")
 
 
+
+
+
+# ══════════════════════════════════════════════════════════════════
+# Deposit review — from notification buttons (dep_approve / dep_reject)
+# ══════════════════════════════════════════════════════════════════
+
+async def handle_deposit_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin approve/reject manual deposit (from notification buttons)."""
+    query = update.callback_query
+    await query.answer()
+
+    try:
+        action, dep_id_str = query.data.split(":")
+        dep_id = int(dep_id_str)
+    except (ValueError, AttributeError):
+        await query.answer("❌ Invalid callback data", show_alert=True)
+        return
+
+    from database import get_session
+    from services.manual_deposit_service import ManualDepositService
+
+    admin_id = update.effective_user.id
+
+    async with get_session() as session:
+        try:
+            if action == "dep_approve":
+                ok = await ManualDepositService.approve_deposit(
+                    session, dep_id, admin_id
+                )
+                await session.commit()
+                msg = "✅ <b>Deposit Approved</b>\nBalance credited to sponsor." if ok else "❌ Failed to approve."
+            else:
+                ok = await ManualDepositService.reject_deposit(
+                    session, dep_id, admin_id
+                )
+                await session.commit()
+                msg = "❌ <b>Deposit Rejected</b>\nNo balance credited." if ok else "❌ Failed to reject."
+        except Exception as e:
+            await session.rollback()
+            log.exception("Deposit review failed", deposit_id=dep_id, action=action)
+            msg = f"❌ Error: <code>{str(e)[:200]}</code>"
+
+        log.info(
+            "Deposit reviewed",
+            deposit_id=dep_id,
+            action=action,
+            admin_id=admin_id,
+        )
+
+    # ── Try to update the message with result ──
+    try:
+        if query.message.photo:
+            base_text = query.message.caption or ""
+            new_text = f"{base_text}\n\n{msg}".strip()
+            if len(new_text) > 1024:
+                new_text = new_text[-1000:]
+            await query.edit_message_caption(
+                caption=new_text,
+                parse_mode="HTML",
+            )
+        else:
+            base_text = query.message.text or ""
+            new_text = f"{base_text}\n\n{msg}".strip()
+            await query.edit_message_text(
+                text=new_text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+    except Exception:
+        log.exception("Failed to update deposit review message", deposit_id=dep_id)
+        try:
+            await query.message.reply_text(msg, parse_mode="HTML")
+        except Exception:
+            pass
 # ══════════════════════════════════════════════════════════════════
 # Sponsor balance adjust (add or subtract)
 # ══════════════════════════════════════════════════════════════════
