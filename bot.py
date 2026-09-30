@@ -61,6 +61,115 @@ from sponsor.panel import (
 log = structlog.get_logger(__name__)
 
 
+# ══════════════════════════════════════════════════════════════
+# Background jobs
+# ══════════════════════════════════════════════════════════════
+
+async def _force_join_periodic_job(application: Application):
+    """Every 6h: verify all users still joined required channels."""
+    try:
+        from services.force_join_service import ForceJoinService
+        await ForceJoinService.run_periodic_check(application.bot)
+    except Exception:
+        log.exception("Force-join periodic job failed")
+
+
+async def _xrocket_withdraw_reconcile_job():
+    """
+    Every 5 min: poll xRocket for PROCESSING withdrawals
+    and update status to PAID / FAILED (with refund).
+    """
+    import json as _json
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from database import get_session
+    from models.withdrawal import Withdrawal, WithdrawalStatus
+    from services.withdrawal_service import WithdrawalService
+    from services.xrocket_service import XRocketService, XRocketError
+    from services.notification_service import NotificationService
+
+    try:
+        async with get_session() as session:
+            result = await session.execute(
+                select(Withdrawal).where(
+                    Withdrawal.status == WithdrawalStatus.PROCESSING,
+                    Withdrawal.xrocket_withdrawal_id.isnot(None),
+                )
+            )
+            pending = result.scalars().all()
+            if not pending:
+                return
+
+            log.info("Reconciling xRocket withdrawals", count=len(pending))
+
+            for wd in pending:
+                try:
+                    resp = await XRocketService.get_withdrawal(
+                        wd.xrocket_withdrawal_id
+                    )
+                except XRocketError as e:
+                    log.warning(
+                        "xRocket get_withdrawal failed",
+                        withdrawal_id=wd.id,
+                        error_type=e.type,
+                        detail=e.detail,
+                    )
+                    continue
+
+                new_status = (resp.get("status") or "").lower()
+                wd.xrocket_status = new_status
+                wd.xrocket_response = _json.dumps(resp)[:4000]
+
+                tx_hash = resp.get("txHash") or resp.get("transactionHash")
+                if tx_hash:
+                    wd.tx_hash = tx_hash
+
+                if new_status in ("finished", "completed", "paid"):
+                    wd.status = WithdrawalStatus.PAID
+                    wd.processed_at = datetime.now(tz=timezone.utc)
+                    await session.commit()
+
+                    log.info(
+                        "Withdrawal confirmed PAID",
+                        withdrawal_id=wd.id,
+                        tx_hash=tx_hash,
+                    )
+
+                    try:
+                        await NotificationService.withdrawal_approved(
+                            user_id=wd.user_id,
+                            amount=str(wd.amount),
+                            wallet=wd.destination_wallet or "—",
+                        )
+                    except Exception:
+                        log.exception(
+                            "withdrawal_approved notify failed", withdrawal_id=wd.id
+                        )
+
+                elif new_status == "failed":
+                    reason = (
+                        resp.get("failureReason")
+                        or resp.get("error")
+                        or "xRocket reported failed"
+                    )
+                    try:
+                        await WithdrawalService._refund_failed_withdrawal(
+                            session, wd, str(reason)[:400]
+                        )
+                        await session.commit()
+                    except Exception:
+                        log.exception(
+                            "Reconcile refund failed", withdrawal_id=wd.id
+                        )
+                        await session.rollback()
+                else:
+                    # Still pending — just persist latest status
+                    await session.commit()
+
+    except Exception:
+        log.exception("xRocket reconcile job crashed")
+
+
 async def post_init(application: Application) -> None:
     """Runs after bot is initialized — set commands, wire services, schedule jobs."""
     from telegram import BotCommand
@@ -94,13 +203,6 @@ async def post_init(application: Application) -> None:
 
     # 3. Schedule periodic force-join membership check
     try:
-        async def _force_join_periodic_job():
-            try:
-                from services.force_join_service import ForceJoinService
-                await ForceJoinService.run_periodic_check(application.bot)
-            except Exception:
-                log.exception("Force-join periodic job failed")
-
         application.job_queue.run_repeating(
             _force_join_periodic_job,
             interval=6 * 3600,
@@ -112,8 +214,33 @@ async def post_init(application: Application) -> None:
     except Exception:
         log.exception("Failed to schedule force-join periodic check")
 
+    # 4. Schedule xRocket withdrawal reconciliation (every 5 min)
+    try:
+        if settings.XROCKET_API_TOKEN:
+            application.job_queue.run_repeating(
+                _xrocket_withdraw_reconcile_job,
+                interval=300,
+                first=60,
+                name="xrocket_withdraw_reconcile",
+                job_kwargs={"misfire_grace_time": 120, "coalesce": True},
+            )
+            log.info("xRocket withdrawal reconcile scheduled (every 5 min)")
+        else:
+            log.warning(
+                "XROCKET_API_TOKEN not set — reconcile job NOT scheduled"
+            )
+    except Exception:
+        log.exception("Failed to schedule xRocket reconcile job")
+
 
 async def post_shutdown(application: Application) -> None:
+    # Close xRocket aiohttp session
+    try:
+        from services.xrocket_service import XRocketService
+        await XRocketService.close()
+    except Exception:
+        log.exception("xRocket session close failed")
+
     await close_db()
     log.info("Database connections closed")
 
@@ -123,11 +250,9 @@ async def _global_force_join_gate(update: Update, context: ContextTypes.DEFAULT_
     if not settings.FORCE_JOIN_ENABLED:
         return
 
-    # Skip chat_member / my_chat_member — these drive leave detection
     if update.chat_member or update.my_chat_member:
         return
 
-    # Skip edited messages
     if update.edited_message:
         return
 
@@ -138,7 +263,6 @@ async def _global_force_join_gate(update: Update, context: ContextTypes.DEFAULT_
     if user.id in settings.ADMIN_IDS:
         return
 
-    # Allow-through list
     if update.message and update.message.text:
         t = update.message.text.strip()
         if (
@@ -153,7 +277,6 @@ async def _global_force_join_gate(update: Update, context: ContextTypes.DEFAULT_
         if data == "force_join_check":
             return
 
-    # Check membership
     try:
         from middlewares.force_join_middleware import ForceJoinMiddleware
         passed = await ForceJoinMiddleware.check(update, context)
@@ -177,25 +300,14 @@ def build_application() -> Application:
 
     app = builder.build()
 
-    # ══════════════════════════════════════════════════════════
-    # Chat member leave detection
-    # ══════════════════════════════════════════════════════════
     app.add_handler(ChatMemberHandler(
         on_chat_member_update,
         ChatMemberHandler.CHAT_MEMBER,
     ))
 
-    # ══════════════════════════════════════════════════════════
-    # -20. GLOBAL FORCE JOIN GATE
-    # ══════════════════════════════════════════════════════════
     app.add_handler(TypeHandler(Update, _global_force_join_gate), group=-20)
 
-    # ══════════════════════════════════════════════════════════
-    # GROUP 0 — all handler registrations
-    # ══════════════════════════════════════════════════════════
-
     # 1. Conversation handlers
-    # NOTE: profile_conv_handler removed (wallet flow is now flag-based)
     app.add_handler(withdraw_conv_handler())
     app.add_handler(support_conv_handler())
 
@@ -269,15 +381,12 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.Regex(r"Main Menu$"), handle_main_menu))
     app.add_handler(MessageHandler(filters.Regex(r"^Cancel$"), handle_user_cancel))
 
-    # ══════════════════════════════════════════════════════════
     # 8. COMBINED free-text dispatcher — LAST in group 0
-    # ══════════════════════════════════════════════════════════
     async def _combined_text_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message or not update.message.text:
             return
         text = update.message.text
 
-        # ── Wallet input takes priority when the flag is set ──
         if context.user_data.get("awaiting_wallet"):
             await wallet_input_router(update, context)
             return
@@ -318,9 +427,7 @@ def build_application() -> Application:
         _combined_text_dispatcher,
     ))
 
-    # ══════════════════════════════════════════════════════════
     # Callback handlers
-    # ══════════════════════════════════════════════════════════
     app.add_handler(CallbackQueryHandler(handle_force_join_check, pattern=r"^force_join_check$"))
     app.add_handler(CallbackQueryHandler(handle_task_done, pattern=r"^task_done:\d+$"))
     app.add_handler(CallbackQueryHandler(handle_task_skip, pattern=r"^task_skip:\d+$"))
