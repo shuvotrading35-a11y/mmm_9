@@ -15,7 +15,7 @@ from telegram.ext import (
 )
 
 from config import settings
-from database import init_db, close_db
+from database import init_db, close_db, get_session
 
 from handlers.start import cmd_start, cmd_help, handle_main_menu, handle_user_cancel
 from handlers.profile import (
@@ -46,6 +46,7 @@ from admin.panel import (
     admin_back_reply, admin_close_reply, admin_cancel_reply,
     admin_text_input_dispatcher,
     admin_force_join_reply,
+    handle_deposit_review,
 )
 from sponsor.panel import (
     sponsor_panel_handler, sponsor_callback_handler,
@@ -56,6 +57,14 @@ from sponsor.panel import (
     sponsor_task_type_reply, sponsor_duration_reply,
     sponsor_cancel_reply,
     sponsor_text_input_handler,
+)
+from sponsor.deposit_router import (
+    show_deposit_menu,
+    prompt_deposit_amount,
+    handle_deposit_amount_input,
+    handle_deposit_check,
+    handle_deposit_tx_hash,
+    handle_deposit_screenshot,
 )
 
 log = structlog.get_logger(__name__)
@@ -82,7 +91,6 @@ async def _xrocket_withdraw_reconcile_job():
     import json as _json
     from datetime import datetime, timezone
     from sqlalchemy import select
-    from database import get_session
     from models.withdrawal import Withdrawal, WithdrawalStatus
     from services.withdrawal_service import WithdrawalService
     from services.xrocket_service import XRocketService, XRocketError
@@ -163,11 +171,80 @@ async def _xrocket_withdraw_reconcile_job():
                         )
                         await session.rollback()
                 else:
-                    # Still pending — just persist latest status
                     await session.commit()
 
     except Exception:
         log.exception("xRocket reconcile job crashed")
+
+
+async def _xrocket_deposit_reconcile_job():
+    """
+    Every 3 min: poll xRocket invoices that are PENDING
+    and credit sponsor balance when paid.
+    """
+    import json as _json
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import select
+    from models.deposit import Deposit, DepositStatus
+    from services.sponsor_service import SponsorService
+    from services.xrocket_service import XRocketService, XRocketError
+
+    try:
+        async with get_session() as session:
+            cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=48)
+
+            result = await session.execute(
+                select(Deposit).where(
+                    Deposit.payment_method == "XROCKET_INVOICE",
+                    Deposit.status == DepositStatus.PENDING,
+                    Deposit.xrocket_invoice_id.isnot(None),
+                    Deposit.created_at >= cutoff,
+                )
+            )
+            pending = result.scalars().all()
+            if not pending:
+                return
+
+            log.info("Reconciling xRocket deposit invoices", count=len(pending))
+
+            for dep in pending:
+                try:
+                    resp = await XRocketService.get_invoice(dep.xrocket_invoice_id)
+                except XRocketError as e:
+                    log.warning(
+                        "get_invoice failed", deposit_id=dep.id, error=e.type
+                    )
+                    continue
+
+                xr_status = (resp.get("status") or "").lower()
+                dep.xrocket_status = xr_status
+                dep.xrocket_response = _json.dumps(resp)[:4000]
+
+                if xr_status in ("paid", "finished", "completed"):
+                    try:
+                        ok = await SponsorService.confirm_xrocket_deposit(
+                            session=session,
+                            deposit_id=dep.id,
+                            xrocket_response=resp,
+                        )
+                        await session.commit()
+                        if ok:
+                            log.info("Deposit auto-credited", deposit_id=dep.id)
+                    except Exception:
+                        log.exception(
+                            "Deposit credit failed", deposit_id=dep.id
+                        )
+                        await session.rollback()
+
+                elif xr_status in ("expired", "cancelled", "failed"):
+                    dep.status = DepositStatus.FAILED
+                    await session.commit()
+
+                else:
+                    await session.commit()
+
+    except Exception:
+        log.exception("xRocket deposit reconcile crashed")
 
 
 async def post_init(application: Application) -> None:
@@ -231,6 +308,20 @@ async def post_init(application: Application) -> None:
             )
     except Exception:
         log.exception("Failed to schedule xRocket reconcile job")
+
+    # 5. Schedule xRocket deposit reconciliation (every 3 min)
+    try:
+        if settings.XROCKET_API_TOKEN:
+            application.job_queue.run_repeating(
+                _xrocket_deposit_reconcile_job,
+                interval=180,
+                first=90,
+                name="xrocket_deposit_reconcile",
+                job_kwargs={"misfire_grace_time": 120, "coalesce": True},
+            )
+            log.info("xRocket deposit reconcile scheduled (every 3 min)")
+    except Exception:
+        log.exception("Failed to schedule deposit reconcile job")
 
 
 async def post_shutdown(application: Application) -> None:
@@ -381,14 +472,42 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.Regex(r"Main Menu$"), handle_main_menu))
     app.add_handler(MessageHandler(filters.Regex(r"^Cancel$"), handle_user_cancel))
 
+    # ══════════════════════════════════════════════════════════
+    # 7.5 PHOTO handler for Binance Pay screenshot
+    # ══════════════════════════════════════════════════════════
+    async def _photo_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update.message or not update.message.photo:
+            return
+        if not context.user_data.get("awaiting_deposit_screenshot"):
+            return
+        await handle_deposit_screenshot(update, context)
+
+    app.add_handler(MessageHandler(
+        filters.PHOTO & ~filters.COMMAND,
+        _photo_dispatcher,
+    ))
+
+    # ══════════════════════════════════════════════════════════
     # 8. COMBINED free-text dispatcher — LAST in group 0
+    # ══════════════════════════════════════════════════════════
     async def _combined_text_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message or not update.message.text:
             return
         text = update.message.text
 
+        # ── Wallet input takes priority when the flag is set ──
         if context.user_data.get("awaiting_wallet"):
             await wallet_input_router(update, context)
+            return
+
+        # ── Sponsor deposit amount ──
+        if context.user_data.get("awaiting_deposit_amount"):
+            await handle_deposit_amount_input(update, context)
+            return
+
+        # ── BEP20 tx hash paste ──
+        if context.user_data.get("awaiting_deposit_txhash"):
+            await handle_deposit_tx_hash(update, context)
             return
 
         if text.lower() in ("/cancel", "cancel"):
@@ -400,6 +519,9 @@ def build_application() -> Application:
                     "admin_awaiting_broadcast",
                     "admin_awaiting_fj_add",
                     "sponsor_step",
+                    "awaiting_deposit_amount",
+                    "awaiting_deposit_txhash",
+                    "awaiting_deposit_screenshot",
                 )
             )
             if has_state:
@@ -427,12 +549,24 @@ def build_application() -> Application:
         _combined_text_dispatcher,
     ))
 
+    # ══════════════════════════════════════════════════════════
     # Callback handlers
+    # ══════════════════════════════════════════════════════════
     app.add_handler(CallbackQueryHandler(handle_force_join_check, pattern=r"^force_join_check$"))
     app.add_handler(CallbackQueryHandler(handle_task_done, pattern=r"^task_done:\d+$"))
     app.add_handler(CallbackQueryHandler(handle_task_skip, pattern=r"^task_skip:\d+$"))
     app.add_handler(CallbackQueryHandler(handle_task_next, pattern=r"^task_next$"))
     app.add_handler(CallbackQueryHandler(handle_live_payments, pattern=r"^live_refresh$"))
+
+    # ── Sponsor deposit callbacks ──
+    app.add_handler(CallbackQueryHandler(prompt_deposit_amount, pattern=r"^dep_amt:"))
+    app.add_handler(CallbackQueryHandler(handle_deposit_check, pattern=r"^deposit_check:\d+$"))
+
+    # ── Admin deposit approve/reject ──
+    app.add_handler(CallbackQueryHandler(
+        handle_deposit_review, pattern=r"^dep_(approve|reject):\d+$"
+    ))
+
     app.add_handler(CallbackQueryHandler(admin_callback_handler, pattern=r"^admin:"))
     app.add_handler(CallbackQueryHandler(sponsor_callback_handler, pattern=r"^sponsor:"))
 
