@@ -187,14 +187,22 @@ class XRocketService:
         price_currency: Optional[str] = None,
         description: Optional[str] = None,
         client_invoice_id: Optional[str] = None,
-        expires_in: Optional[int] = None,   # seconds
+        expires_in: Optional[int] = None,   # seconds (converted to ms)
     ) -> dict:
         """
         POST /api/v1/invoices
-        Returns invoice with pay URL for the user.
 
-        `priceCurrency` is REQUIRED by xRocket — it's the currency the
-        invoice amount is denominated in. Defaults to `asset` if not set.
+        ⚠️ xRocket field names (verified against testnet):
+          - amount       → `priceAmount`  (string)
+          - priceCurrency is REQUIRED
+          - expiresIn    is in MILLISECONDS
+
+        Returns dict with:
+          - id                    (invoice ID)
+          - clientInvoiceId
+          - priceAmount, priceCurrency
+          - status
+          - links.telegramBotLink (pay URL)
         """
         payload: dict[str, Any] = {
             "clientInvoiceId": client_invoice_id or cls._new_client_id("INV"),
@@ -202,11 +210,11 @@ class XRocketService:
             "priceCurrency": price_currency or asset,
         }
         if amount is not None:
-            payload["amount"] = str(amount)
+            payload["priceAmount"] = str(amount)   # ⭐ correct field name
         if description:
             payload["description"] = description
         if expires_in:
-            payload["expiresIn"] = expires_in
+            payload["expiresIn"] = int(expires_in) * 1000  # seconds → ms
         return await cls._request("POST", "/api/v1/invoices", json=payload)
 
     @classmethod
